@@ -1,4 +1,5 @@
-const { createApp } = Vue;
+const { createApp, computed } = Vue;
+const { useStorage, useDebouncedRefHistory } = VueUse;
 
 const STORAGE_KEY = "time-tracker-data";
 const HOUR_HEIGHT = 48; // 1時間あたりの高さ(px)
@@ -36,11 +37,72 @@ function minutesOfDay(iso) {
   return d.getHours() * 60 + d.getMinutes();
 }
 
+// 保存データの正規化（壊れた/古い形式を整える）
+function normalizeData(d) {
+  if (!Array.isArray(d.projects)) d.projects = [];
+  d.entries = (Array.isArray(d.entries) ? d.entries : [])
+    .filter((e) => e && e.start)
+    .map((e) => ({
+      id: e.id || uuid(),
+      description: e.description || "",
+      projectId: e.projectId ?? null,
+      tags: Array.isArray(e.tags) ? e.tags : [],
+      start: e.start,
+      end: e.end || new Date(new Date(e.start).getTime() + 30 * 60000).toISOString(),
+    }));
+}
+
 createApp({
+  // 永続化(localStorage)と履歴(undo/redo)を VueUse に委譲する。
+  setup() {
+    // localStorage と自動同期する反応的ストア
+    const store = useStorage(
+      STORAGE_KEY,
+      { entries: [], projects: [] },
+      localStorage,
+      { mergeDefaults: true }
+    );
+    normalizeData(store.value);
+
+    // 連続した変更を 400ms でまとめて1ステップにする undo/redo 履歴
+    const {
+      undo: histUndo,
+      redo: histRedo,
+      canUndo,
+      canRedo,
+      pause: histPause,
+      resume: histResume,
+    } = useDebouncedRefHistory(store, {
+      deep: true,
+      clone: true,
+      debounce: 400,
+      capacity: 100,
+    });
+
+    // 既存コードが this.entries / this.projects のまま使えるようにする
+    const entries = computed({
+      get: () => store.value.entries,
+      set: (v) => { store.value.entries = v; },
+    });
+    const projects = computed({
+      get: () => store.value.projects,
+      set: (v) => { store.value.projects = v; },
+    });
+
+    return {
+      entries,
+      projects,
+      canUndo,
+      canRedo,
+      _histUndo: histUndo,
+      _histRedo: histRedo,
+      _histPause: histPause,
+      _histResume: histResume,
+    };
+  },
+
   data() {
     return {
-      entries: [],
-      projects: [],
       newProject: { name: "", color: "#4dabf7" },
       editingId: null,
       draftId: null, // 新規作成して未保存のエントリ(閉じたら破棄)
@@ -53,9 +115,7 @@ createApp({
       drag: null, // ドラッグ中の状態
       preview: null, // 作成中のプレビュー
       hourHeight: HOUR_HEIGHT,
-      undoStack: [], // 元に戻す用のスナップショット
-      redoStack: [], // やり直し用のスナップショット
-      pendingCommit: false, // 確定待ちの変更があるか
+      _paused: false, // ドラフト編集中に履歴記録を止めているか
       tabs: [
         { key: "calendar", label: "カレンダー" },
         { key: "projects", label: "プロジェクト" },
@@ -119,12 +179,6 @@ createApp({
     previewLabel() {
       if (!this.preview) return "";
       return `${this.minToClock(this.preview.startMin)}–${this.minToClock(this.preview.endMin)}`;
-    },
-    canUndo() {
-      return this.undoStack.length > 0 || this.pendingCommit;
-    },
-    canRedo() {
-      return this.redoStack.length > 0;
     },
     popoverStyle() {
       const W = 320;
@@ -347,6 +401,8 @@ createApp({
         start: toLocalInput(entry.start),
         end: toLocalInput(entry.end),
       };
+      // ドラフト確定までは履歴に記録しない
+      if (isDraft) this.pauseHistory();
     },
     saveEdit() {
       const e = this.entries.find((x) => x.id === this.editingId);
@@ -363,9 +419,11 @@ createApp({
       e.start = start;
       e.end = end;
       this.lastProjectId = e.projectId;
-      this.draftId = null; // 確定したのでドラフトではなくなる
+      const wasDraft = this.draftId === this.editingId;
+      this.draftId = null;
       this.editingId = null;
-      this.onStateChange(); // 保存を反映(永続化 + 履歴)
+      // ドラフトの作成+保存は1ステップとして履歴に確定する
+      if (wasDraft) this.resumeHistory(true);
     },
     deleteEditing() {
       // ドラフトの削除は破棄と同じ(履歴に残さない)
@@ -382,10 +440,14 @@ createApp({
     },
     // 未保存の新規エントリを取り消す
     discardDraft() {
-      if (!this.draftId) return;
+      if (!this.draftId) {
+        this.resumeHistory(false); // 念のため: 一時停止だけ残っていれば解除
+        return;
+      }
       const id = this.draftId;
       this.draftId = null;
       this.entries = this.entries.filter((e) => e.id !== id);
+      this.resumeHistory(false); // 破棄は履歴に記録しない
     },
     onOutsidePointer(event) {
       if (!this.editingId) return;
@@ -408,6 +470,26 @@ createApp({
         event.preventDefault();
         this.redo();
       }
+    },
+
+    // --- 履歴(undo/redo) ---
+    pauseHistory() {
+      if (this._paused) return;
+      this._histPause();
+      this._paused = true;
+    },
+    resumeHistory(commitNow) {
+      if (!this._paused) return;
+      this._histResume(commitNow);
+      this._paused = false;
+    },
+    undo() {
+      this._histUndo();
+      this.closeEditor();
+    },
+    redo() {
+      this._histRedo();
+      this.closeEditor();
     },
 
     // --- プロジェクト ---
@@ -477,86 +559,6 @@ createApp({
       return pad(n);
     },
 
-    // --- 永続化 + 履歴(undo/redo) ---
-    onStateChange() {
-      if (this.draftId) return; // ドラフト編集中は保存も履歴も保留
-      this.persist();
-      if (this._restoring) return; // 復元中は履歴に記録しない
-      this.scheduleCommit();
-    },
-    persist() {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ entries: this.entries, projects: this.projects })
-      );
-    },
-    snapshot() {
-      return JSON.stringify({ entries: this.entries, projects: this.projects });
-    },
-    applySnapshot(str) {
-      const data = JSON.parse(str);
-      this.entries = data.entries;
-      this.projects = data.projects;
-    },
-    // 連続した変更(ドラッグ/連続入力)を1ステップにまとめてから確定する
-    scheduleCommit() {
-      this.pendingCommit = true;
-      clearTimeout(this._commitTimer);
-      this._commitTimer = setTimeout(() => this.commit(), 400);
-    },
-    commit() {
-      clearTimeout(this._commitTimer);
-      this._commitTimer = null;
-      this.pendingCommit = false;
-      const cur = this.snapshot();
-      if (cur === this._committed) return; // 実質変化なし
-      this.undoStack.push(this._committed);
-      if (this.undoStack.length > 100) this.undoStack.shift();
-      this.redoStack = [];
-      this._committed = cur;
-    },
-    undo() {
-      if (this.pendingCommit) this.commit(); // 保留中の変更を先に確定
-      if (!this.undoStack.length) return;
-      this.redoStack.push(this.snapshot());
-      this.restore(this.undoStack.pop());
-    },
-    redo() {
-      if (this.pendingCommit) this.commit();
-      if (!this.redoStack.length) return;
-      this.undoStack.push(this.snapshot());
-      this.restore(this.redoStack.pop());
-    },
-    restore(str) {
-      this._restoring = true;
-      this.applySnapshot(str);
-      this._committed = str;
-      this.closeEditor();
-      this.$nextTick(() => { this._restoring = false; });
-    },
-    loadState() {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return;
-        const data = JSON.parse(raw);
-        if (Array.isArray(data.projects)) this.projects = data.projects;
-        if (Array.isArray(data.entries)) {
-          this.entries = data.entries
-            .filter((e) => e && e.start)
-            .map((e) => ({
-              id: e.id || uuid(),
-              description: e.description || "",
-              projectId: e.projectId ?? null,
-              tags: Array.isArray(e.tags) ? e.tags : [],
-              start: e.start,
-              end: e.end || new Date(new Date(e.start).getTime() + 30 * 60000).toISOString(),
-            }));
-        }
-      } catch (err) {
-        console.error("データの読み込みに失敗しました", err);
-      }
-    },
-
     // --- インポート/エクスポート ---
     exportJSON() {
       const data = JSON.stringify({ entries: this.entries, projects: this.projects }, null, 2);
@@ -591,19 +593,7 @@ createApp({
     },
   },
 
-  watch: {
-    entries: { handler() { this.onStateChange(); }, deep: true },
-    projects: { handler() { this.onStateChange(); }, deep: true },
-  },
-
   mounted() {
-    // 履歴用の内部状態
-    this._committed = null;
-    this._restoring = true; // 読み込み中は記録しない
-    this._commitTimer = null;
-    this.loadState();
-    this._committed = this.snapshot();
-    this.$nextTick(() => { this._restoring = false; });
     this._onMove = this.onDragMove.bind(this);
     this._onUp = this.onDragUp.bind(this);
     this._onOutside = this.onOutsidePointer.bind(this);
