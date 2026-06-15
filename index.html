@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Time Tracker</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <h1 class="topbar__title">Time Tracker</h1>
+      <nav class="tabs">
+        <button
+          v-for="t in tabs"
+          :key="t.key"
+          class="tabs__btn"
+          :class="{ 'is-active': activeTab === t.key }"
+          @click="activeTab = t.key"
+        >{{ t.label }}</button>
+      </nav>
+      <div class="topbar__tools">
+        <button class="icon-btn" :disabled="!canUndo" title="元に戻す (Ctrl+Z)" @click="undo">↶</button>
+        <button class="icon-btn" :disabled="!canRedo" title="やり直し (Ctrl+Shift+Z)" @click="redo">↷</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <!-- ===== カレンダー（週表示） ===== -->
+      <section v-show="activeTab === 'calendar'" class="cal-wrap">
+        <div class="cal-nav">
+          <button class="icon-btn" title="前の週" @click="prevWeek">‹</button>
+          <button class="btn" @click="goToday">今週</button>
+          <button class="icon-btn" title="次の週" @click="nextWeek">›</button>
+          <span class="cal-nav__label">{{ weekLabel }}</span>
+          <span class="cal-nav__total">週合計 {{ formatDuration(weekTotal) }}</span>
+        </div>
+
+        <div class="cal">
+          <!-- 曜日ヘッダ -->
+          <div class="cal__head">
+            <div class="cal__gutter-head"></div>
+            <div
+              class="cal__dayhead"
+              :class="{ 'is-today': isToday(d) }"
+              v-for="(d, i) in weekDays"
+              :key="i"
+            >
+              <span class="cal__dayhead-wd">{{ weekdayLabel(d) }}</span>
+              <span class="cal__dayhead-date">{{ d.getDate() }}</span>
+            </div>
+          </div>
+
+          <!-- スクロール領域 -->
+          <div class="cal__scroll" ref="scroll">
+            <div class="cal__body" :style="{ height: bodyHeight + 'px' }">
+              <!-- 時刻軸 -->
+              <div class="cal__gutter">
+                <div class="cal__hour" v-for="h in 24" :key="h" :style="{ height: hourHeight + 'px' }">
+                  <span class="cal__hour-label">{{ pad2(h - 1) }}:00</span>
+                </div>
+              </div>
+
+              <!-- 7日分のカラム -->
+              <div class="cal__cols" ref="cols">
+                <div
+                  class="cal__col"
+                  :class="{ 'is-today': isToday(d) }"
+                  v-for="(d, di) in weekDays"
+                  :key="di"
+                  @mousedown="onCreateDown($event, di)"
+                >
+                  <div class="cal__hourline" v-for="h in 23" :key="h" :style="{ top: h * hourHeight + 'px' }"></div>
+
+                  <div
+                    v-for="e in entriesByDay[di]"
+                    :key="e.id"
+                    class="cal__block"
+                    :class="{ 'is-selected': editingId === e.id }"
+                    :style="blockStyle(e)"
+                    @mousedown.stop="onBlockDown($event, e, di)"
+                  >
+                    <div class="cal__resize cal__resize--top" @mousedown.stop="onResizeDown($event, e, di, 'top')"></div>
+                    <div class="cal__block-inner">
+                      <div class="cal__block-time">{{ formatClock(e.start) }}–{{ formatClock(e.end) }}</div>
+                      <div class="cal__block-desc">{{ e.description || '(無題)' }}</div>
+                    </div>
+                    <div class="cal__resize cal__resize--bottom" @mousedown.stop="onResizeDown($event, e, di, 'bottom')"></div>
+                  </div>
+
+                  <div
+                    v-if="preview && preview.dayIndex === di"
+                    class="cal__block cal__block--preview"
+                    :style="previewStyle"
+                  >
+                    <div class="cal__block-time">{{ previewLabel }}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <p class="cal-hint">空き時間をドラッグして予定を作成。ブロックは中央ドラッグで移動、上下端でリサイズ、クリックで編集。</p>
+      </section>
+
+      <!-- ===== プロジェクト ===== -->
+      <section v-show="activeTab === 'projects'" class="projects">
+        <div class="project-add">
+          <input type="text" v-model="newProject.name" placeholder="プロジェクト名" @keyup.enter="addProject" />
+          <input type="color" v-model="newProject.color" />
+          <button class="btn btn--start" @click="addProject">追加</button>
+        </div>
+        <p v-if="projects.length === 0" class="empty">プロジェクトがありません。</p>
+        <ul class="project-list">
+          <li v-for="p in projects" :key="p.id" class="project-item">
+            <input type="color" v-model="p.color" />
+            <input type="text" v-model="p.name" class="project-item__name" />
+            <span class="project-item__count">{{ entryCountOf(p.id) }} 件</span>
+            <button class="icon-btn" title="削除" @click="removeProject(p.id)">🗑</button>
+          </li>
+        </ul>
+      </section>
+
+      <!-- ===== レポート ===== -->
+      <section v-show="activeTab === 'report'" class="report">
+        <div class="report__controls">
+          <button
+            v-for="r in ranges"
+            :key="r.key"
+            class="tabs__btn"
+            :class="{ 'is-active': reportRange === r.key }"
+            @click="reportRange = r.key"
+          >{{ r.label }}</button>
+          <span class="report__grandtotal">合計 {{ formatDuration(reportTotal) }}</span>
+        </div>
+        <p v-if="reportTotal === 0" class="empty">対象期間の記録がありません。</p>
+        <ul class="report-list">
+          <li v-for="row in reportRows" :key="row.id" class="report-row">
+            <span class="report-row__label">
+              <span class="dot" :style="{ background: row.color }"></span>
+              {{ row.name }}
+            </span>
+            <div class="report-row__barwrap">
+              <div class="report-row__bar" :style="{ width: row.pct + '%', background: row.color }"></div>
+            </div>
+            <span class="report-row__dur">{{ formatDuration(row.total) }}</span>
+            <span class="report-row__pct">{{ row.pct }}%</span>
+          </li>
+        </ul>
+      </section>
+
+      <!-- ===== データ管理 ===== -->
+      <section v-show="activeTab === 'data'" class="data">
+        <p>localStorage に自動保存されています。バックアップや移行に JSON を使えます。</p>
+        <div class="data__actions">
+          <button class="btn btn--start" @click="exportJSON">エクスポート (JSON)</button>
+          <button class="btn" @click="$refs.importInput.click()">インポート (JSON)</button>
+          <input ref="importInput" type="file" accept="application/json" hidden @change="importJSON" />
+        </div>
+        <p class="data__hint">インポートは現在のデータを置き換えます。</p>
+      </section>
+    </main>
+
+    <!-- ===== 編集ポップオーバー ===== -->
+    <div v-if="editingId" class="popover" ref="popover" :style="popoverStyle">
+      <div class="popover__head">
+        <h3 class="popover__title">エントリ編集</h3>
+        <button class="icon-btn" title="閉じる" @click="closeEditor">×</button>
+      </div>
+      <label class="field">説明
+        <input type="text" v-model="editForm.description" placeholder="何をした？" />
+      </label>
+      <label class="field">プロジェクト
+        <select v-model="editForm.projectId">
+          <option :value="null">プロジェクトなし</option>
+          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+        </select>
+      </label>
+      <label class="field">タグ (カンマ区切り)
+        <input type="text" v-model="editForm.tagsText" placeholder="例: 開発, 会議" />
+      </label>
+      <div class="field-row">
+        <label class="field">開始
+          <input type="datetime-local" v-model="editForm.start" />
+        </label>
+        <label class="field">終了
+          <input type="datetime-local" v-model="editForm.end" />
+        </label>
+      </div>
+      <div class="popover__actions">
+        <button class="btn btn--stop" @click="deleteEditing">削除</button>
+        <span class="popover__spacer"></span>
+        <button class="btn btn--start" @click="saveEdit">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
