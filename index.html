@@ -23,6 +23,9 @@
 
     * { box-sizing: border-box; }
 
+    /* ページのスクロールバー領域を常に確保し、ビュー切替で幅がズレないように */
+    html { scrollbar-gutter: stable; }
+
     body {
       margin: 0;
       font-family: -apple-system, "Segoe UI", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
@@ -32,7 +35,7 @@
     }
 
     #app {
-      max-width: 1100px;
+      max-width: 1440px;
       margin: 0 auto;
       padding: 0 16px 32px;
     }
@@ -46,8 +49,125 @@
     .topbar__title { font-size: 18px; margin: 0; }
     .topbar__tools { margin-left: auto; display: flex; gap: 2px; }
 
-    /* ===== タブ ===== */
-    .tabs { display: flex; gap: 4px; }
+    /* ===== 2カラムレイアウト ===== */
+    .cols {
+      display: grid;
+      grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr);
+      gap: 28px;
+      align-items: start;
+    }
+    @media (max-width: 860px) {
+      .cols { grid-template-columns: 1fr; }
+    }
+    /* ===== セクション ===== */
+    .col > section { margin-bottom: 40px; }
+    .col > section:last-child { margin-bottom: 0; }
+
+    /* ===== 管理ドロワー（プロジェクト / データ） ===== */
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.3);
+      z-index: 90;
+    }
+    .drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      height: 100vh;
+      width: 420px;
+      max-width: 92vw;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      box-shadow: -8px 0 28px rgba(0, 0, 0, 0.16);
+      z-index: 91;
+      padding: 16px 20px 40px;
+      overflow-y: auto;
+      transform: translateX(100%);
+      transition: transform 0.22s ease;
+    }
+    .drawer.is-open { transform: translateX(0); }
+    .drawer__head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .drawer__title { font-size: 16px; margin: 0; }
+    .drawer section { margin-bottom: 32px; }
+    .drawer section:last-child { margin-bottom: 0; }
+    .section-title {
+      font-size: 16px;
+      margin: 0 0 12px;
+      padding-bottom: 6px;
+      border-bottom: 2px solid var(--border);
+    }
+    /* 見出し + 右側ツール（ビュー切替/undo・redo）を1行に */
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding-bottom: 6px;
+      border-bottom: 2px solid var(--border);
+    }
+    .section-head .section-title { margin: 0; padding: 0; border: 0; }
+    .section-head__tools { display: flex; align-items: center; gap: 4px; }
+
+    /* ===== エントリー リスト表示 ===== */
+    .entry-list { list-style: none; margin: 0; padding: 0; }
+    .entry-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      margin-bottom: 6px;
+      cursor: pointer;
+    }
+    .entry-row:hover { background: #f8f9fa; }
+    .entry-row.is-selected { box-shadow: 0 0 0 2px var(--accent); }
+    .entry-row__date {
+      flex: 0 0 84px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .entry-row__time {
+      flex: 0 0 96px;
+      color: var(--muted);
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+    }
+    .entry-row__proj {
+      flex: 0 0 130px;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      font-size: 13px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .entry-row__proj.is-none { color: var(--muted); }
+    .entry-row__desc {
+      flex: 1 1 auto;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .entry-row__tags { display: flex; flex-wrap: wrap; gap: 3px; flex: 0 1 auto; }
+    .entry-row__dur {
+      flex: 0 0 auto;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* レポートの期間/集計切り替えに使うボタン */
     .tabs__btn {
       border: none;
       background: transparent;
@@ -121,6 +241,7 @@
       gap: 8px;
       margin-bottom: 12px;
     }
+    .cal-nav__sep { width: 1px; align-self: stretch; background: var(--border); margin: 2px 4px; }
     .cal-nav__label { font-weight: 600; margin-left: 6px; }
     .cal-nav__total {
       margin-left: auto;
@@ -138,6 +259,10 @@
     .cal__head {
       display: flex;
       border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      background: var(--surface);
     }
     .cal__gutter-head { flex: 0 0 var(--gutter-w); }
     .cal__dayhead {
@@ -149,6 +274,13 @@
     .cal__dayhead-wd { font-size: 12px; color: var(--muted); }
     .cal__dayhead-date { font-size: 18px; font-weight: 600; }
     .cal__dayhead.is-today .cal__dayhead-date { color: var(--accent); }
+    .cal__dayhead-total {
+      display: block;
+      min-height: 1em;
+      font-size: 11px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
 
     .cal__scroll { max-height: 70vh; overflow-y: auto; }
     .cal__body { display: flex; position: relative; }
@@ -200,11 +332,29 @@
       color: var(--muted);
       font-size: 11px;
     }
+    .cal__block-proj {
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cal__block-proj.is-none { font-weight: 400; color: var(--muted); }
     .cal__block-desc {
       font-weight: 600;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+    .cal__block-tags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px; }
+    .cal__tag {
+      font-size: 10px;
+      line-height: 1.5;
+      padding: 0 5px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.08);
+      color: var(--text);
+      white-space: nowrap;
     }
     .cal__block--preview {
       background: rgba(77, 171, 247, 0.25);
@@ -240,7 +390,7 @@
     .project-item__count { color: var(--muted); font-size: 13px; white-space: nowrap; }
 
     /* ===== レポート ===== */
-    .report__controls { display: flex; align-items: center; gap: 6px; margin-bottom: 16px; }
+    .report__controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
     .report__grandtotal { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
     .report-list { list-style: none; margin: 0; padding: 0; }
     .report-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
@@ -311,24 +461,34 @@
   <div id="app">
     <header class="topbar">
       <h1 class="topbar__title">Time Tracker</h1>
-      <nav class="tabs">
-        <button
-          v-for="t in tabs"
-          :key="t.key"
-          class="tabs__btn"
-          :class="{ 'is-active': activeTab === t.key }"
-          @click="activeTab = t.key"
-        >{{ t.label }}</button>
-      </nav>
       <div class="topbar__tools">
-        <button class="icon-btn" :disabled="!canUndo" title="元に戻す (Ctrl+Z)" @click="undo">↶</button>
-        <button class="icon-btn" :disabled="!canRedo" title="やり直し (Ctrl+Shift+Z)" @click="redo">↷</button>
+        <button class="icon-btn" title="プロジェクト / データ管理" @click="menuOpen = true">⚙</button>
       </div>
     </header>
 
     <main class="content">
+      <div class="cols">
+      <div class="col">
       <!-- ===== カレンダー（週表示） ===== -->
-      <section v-show="activeTab === 'calendar'" class="cal-wrap">
+      <section class="entries">
+        <div class="section-head">
+          <h2 class="section-title">エントリー</h2>
+          <div class="section-head__tools">
+            <button class="icon-btn" :disabled="!canUndo" title="元に戻す (Ctrl+Z)" @click="undo">↶</button>
+            <button class="icon-btn" :disabled="!canRedo" title="やり直し (Ctrl+Shift+Z)" @click="redo">↷</button>
+            <span class="cal-nav__sep"></span>
+            <button
+              v-for="v in entryViews"
+              :key="v.key"
+              class="tabs__btn"
+              :class="{ 'is-active': entryView === v.key }"
+              @click="entryView = v.key"
+            >{{ v.label }}</button>
+          </div>
+        </div>
+
+        <!-- カレンダー表示 -->
+        <div v-show="entryView === 'calendar'">
         <div class="cal-nav">
           <button class="icon-btn" title="前の週" @click="prevWeek">‹</button>
           <button class="btn" @click="goToday">今週</button>
@@ -338,22 +498,23 @@
         </div>
 
         <div class="cal">
-          <!-- 曜日ヘッダ -->
-          <div class="cal__head">
-            <div class="cal__gutter-head"></div>
-            <div
-              class="cal__dayhead"
-              :class="{ 'is-today': isToday(d) }"
-              v-for="(d, i) in weekDays"
-              :key="i"
-            >
-              <span class="cal__dayhead-wd">{{ weekdayLabel(d) }}</span>
-              <span class="cal__dayhead-date">{{ d.getDate() }}</span>
-            </div>
-          </div>
-
           <!-- スクロール領域 -->
           <div class="cal__scroll" ref="scroll">
+            <!-- 曜日ヘッダ（スクロール内で上部に固定し、本体と列幅を揃える） -->
+            <div class="cal__head">
+              <div class="cal__gutter-head"></div>
+              <div
+                class="cal__dayhead"
+                :class="{ 'is-today': isToday(d) }"
+                v-for="(d, i) in weekDays"
+                :key="i"
+              >
+                <span class="cal__dayhead-wd">{{ weekdayLabel(d) }}</span>
+                <span class="cal__dayhead-date">{{ d.getDate() }}</span>
+                <span class="cal__dayhead-total">{{ dayTotals[i] ? formatDuration(dayTotals[i]) : '' }}</span>
+              </div>
+            </div>
+
             <div class="cal__body" :style="{ height: bodyHeight + 'px' }">
               <!-- 時刻軸 -->
               <div class="cal__gutter">
@@ -384,7 +545,11 @@
                     <div class="cal__resize cal__resize--top" @mousedown.stop="onResizeDown($event, e, di, 'top')"></div>
                     <div class="cal__block-inner">
                       <div class="cal__block-time">{{ formatClock(e.start) }}–{{ formatClock(e.end) }}</div>
+                      <div class="cal__block-proj" :class="{ 'is-none': !projectOf(e) }">{{ projectLabel(e) }}</div>
                       <div class="cal__block-desc">{{ e.description || '(無題)' }}</div>
+                      <div v-if="e.tags && e.tags.length" class="cal__block-tags">
+                        <span v-for="t in e.tags" :key="t" class="cal__tag">{{ t }}</span>
+                      </div>
                     </div>
                     <div class="cal__resize cal__resize--bottom" @mousedown.stop="onResizeDown($event, e, di, 'bottom')"></div>
                   </div>
@@ -402,36 +567,52 @@
           </div>
         </div>
         <p class="cal-hint">空き時間をドラッグして予定を作成。ブロックは中央ドラッグで移動、上下端でリサイズ、クリックで編集。</p>
-      </section>
-
-      <!-- ===== プロジェクト ===== -->
-      <section v-show="activeTab === 'projects'" class="projects">
-        <div class="project-add">
-          <input type="text" v-model="newProject.name" placeholder="プロジェクト名" @keyup.enter="addProject" />
-          <input type="color" v-model="newProject.color" />
-          <button class="btn btn--start" @click="addProject">追加</button>
         </div>
-        <p v-if="projects.length === 0" class="empty">プロジェクトがありません。</p>
-        <ul class="project-list">
-          <li v-for="p in projects" :key="p.id" class="project-item">
-            <input type="color" v-model="p.color" />
-            <input type="text" v-model="p.name" class="project-item__name" />
-            <span class="project-item__count">{{ entryCountOf(p.id) }} 件</span>
-            <button class="icon-btn" title="削除" @click="removeProject(p.id)">🗑</button>
-          </li>
-        </ul>
-      </section>
 
+        <!-- リスト表示 -->
+        <div v-show="entryView === 'list'">
+          <div class="report__controls">
+            <select v-model="listRange" class="report__range">
+              <option v-for="r in ranges" :key="r.key" :value="r.key">{{ r.label }}</option>
+            </select>
+            <span class="report__grandtotal">合計 {{ formatDuration(listTotal) }}</span>
+          </div>
+          <p v-if="listEntries.length === 0" class="empty">対象期間のエントリーがありません。</p>
+          <ul class="entry-list">
+            <li
+              v-for="e in listEntries"
+              :key="e.id"
+              class="entry-row"
+              :class="{ 'is-selected': editingId === e.id }"
+              @click="openEditor(e.id, $event.clientX, $event.clientY)"
+            >
+              <span class="entry-row__date">{{ formatDate(e.start) }}</span>
+              <span class="entry-row__time">{{ formatClock(e.start) }}–{{ formatClock(e.end) }}</span>
+              <span class="entry-row__proj" :class="{ 'is-none': !projectOf(e) }">
+                <span class="dot" :style="{ background: entryColor(e) }"></span>{{ projectLabel(e) }}
+              </span>
+              <span class="entry-row__desc">{{ e.description || '(無題)' }}</span>
+              <span class="entry-row__tags">
+                <span v-for="t in e.tags" :key="t" class="cal__tag">{{ t }}</span>
+              </span>
+              <span class="entry-row__dur">{{ formatDuration(durationOf(e)) }}</span>
+            </li>
+          </ul>
+        </div>
+      </section>
+      </div>
+
+      <div class="col">
       <!-- ===== レポート ===== -->
-      <section v-show="activeTab === 'report'" class="report">
+      <section class="report">
+        <h2 class="section-title">レポート</h2>
         <div class="report__controls">
-          <button
-            v-for="r in ranges"
-            :key="r.key"
-            class="tabs__btn"
-            :class="{ 'is-active': reportRange === r.key }"
-            @click="reportRange = r.key"
-          >{{ r.label }}</button>
+          <select v-model="reportRange" class="report__range">
+            <option v-for="r in ranges" :key="r.key" :value="r.key">{{ r.label }}</option>
+          </select>
+          <select v-model="reportGroupBy" class="report__range">
+            <option v-for="g in groupModes" :key="g.key" :value="g.key">{{ g.label }}</option>
+          </select>
           <span class="report__grandtotal">合計 {{ formatDuration(reportTotal) }}</span>
         </div>
         <p v-if="reportTotal === 0" class="empty">対象期間の記録がありません。</p>
@@ -449,9 +630,40 @@
           </li>
         </ul>
       </section>
+      </div>
+      </div>
+    </main>
+
+    <!-- ===== 管理ドロワー（プロジェクト / データ） ===== -->
+    <div v-if="menuOpen" class="drawer-backdrop" @click="menuOpen = false"></div>
+    <aside class="drawer" :class="{ 'is-open': menuOpen }">
+      <div class="drawer__head">
+        <h2 class="drawer__title">管理</h2>
+        <button class="icon-btn" title="閉じる" @click="menuOpen = false">×</button>
+      </div>
+
+      <!-- ===== プロジェクト ===== -->
+      <section class="projects">
+        <h2 class="section-title">プロジェクト</h2>
+        <div class="project-add">
+          <input type="text" v-model="newProject.name" placeholder="プロジェクト名" @keyup.enter="addProject" />
+          <input type="color" v-model="newProject.color" />
+          <button class="btn btn--start" @click="addProject">追加</button>
+        </div>
+        <p v-if="projects.length === 0" class="empty">プロジェクトがありません。</p>
+        <ul class="project-list">
+          <li v-for="p in projects" :key="p.id" class="project-item">
+            <input type="color" v-model="p.color" />
+            <input type="text" v-model="p.name" class="project-item__name" />
+            <span class="project-item__count">{{ entryCountOf(p.id) }} 件</span>
+            <button class="icon-btn" title="削除" @click="removeProject(p.id)">🗑</button>
+          </li>
+        </ul>
+      </section>
 
       <!-- ===== データ管理 ===== -->
-      <section v-show="activeTab === 'data'" class="data">
+      <section class="data">
+        <h2 class="section-title">データ</h2>
         <p>localStorage に自動保存されています。バックアップや移行に JSON を使えます。</p>
         <div class="data__actions">
           <button class="btn btn--start" @click="exportJSON">エクスポート (JSON)</button>
@@ -460,7 +672,7 @@
         </div>
         <p class="data__hint">インポートは現在のデータを置き換えます。</p>
       </section>
-    </main>
+    </aside>
 
     <!-- ===== 編集ポップオーバー ===== -->
     <div v-if="editingId" class="popover" ref="popover" :style="popoverStyle">
@@ -607,24 +819,32 @@
           draftId: null, // 新規作成して未保存のエントリ(閉じたら破棄)
           editForm: { description: "", projectId: null, tagsText: "", start: "", end: "" },
           editorPos: { x: 0, y: 0 }, // ポップオーバーの表示位置
-          activeTab: "calendar",
+          entryView: "calendar", // エントリーの表示: calendar | list
+          listRange: "week", // リスト表示の集計期間
           reportRange: "today",
+          reportGroupBy: "project", // レポートの集計軸: project | tag
+          menuOpen: false, // 管理ドロワー(プロジェクト/データ)の開閉
+          entryViews: [
+            { key: "calendar", label: "カレンダー" },
+            { key: "list", label: "リスト" },
+          ],
           viewDate: new Date(), // 表示中の週の基準日
           lastProjectId: null, // 直近に使ったプロジェクト
           drag: null, // ドラッグ中の状態
           preview: null, // 作成中のプレビュー
           hourHeight: HOUR_HEIGHT,
           _paused: false, // ドラフト編集中に履歴記録を止めているか
-          tabs: [
-            { key: "calendar", label: "カレンダー" },
-            { key: "projects", label: "プロジェクト" },
-            { key: "report", label: "レポート" },
-            { key: "data", label: "データ" },
-          ],
           ranges: [
             { key: "today", label: "今日" },
             { key: "week", label: "今週" },
-            { key: "all", label: "全期間" },
+            { key: "month", label: "今月" },
+            { key: "year", label: "今年" },
+            { key: "lastweek", label: "先週" },
+            { key: "lastmonth", label: "先月" },
+          ],
+          groupModes: [
+            { key: "project", label: "プロジェクト別" },
+            { key: "tag", label: "タグ別" },
           ],
         };
       },
@@ -667,6 +887,25 @@
           }
           return total;
         },
+        // 曜日ヘッダ用: 各日(0〜6)のエントリ合計時間
+        dayTotals() {
+          return this.entriesByDay.map((arr) =>
+            arr.reduce((sum, e) => sum + this.durationOf(e), 0)
+          );
+        },
+        // リスト表示用: 指定期間で絞り込み、開始時刻の新しい順
+        listEntries() {
+          const { start, end } = this.rangeBounds(this.listRange);
+          return this.entries
+            .filter((e) => {
+              const s = new Date(e.start).getTime();
+              return s >= start && s < end;
+            })
+            .sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime());
+        },
+        listTotal() {
+          return this.listEntries.reduce((sum, e) => sum + this.durationOf(e), 0);
+        },
         previewStyle() {
           if (!this.preview) return {};
           const { startMin, endMin } = this.preview;
@@ -701,6 +940,11 @@
           return this.reportEntries.reduce((sum, e) => sum + this.durationOf(e), 0);
         },
         reportRows() {
+          return this.reportGroupBy === "tag"
+            ? this.reportRowsByTag
+            : this.reportRowsByProject;
+        },
+        reportRowsByProject() {
           const totals = {};
           for (const e of this.reportEntries) {
             const key = e.projectId || "__none__";
@@ -718,6 +962,25 @@
                 pct: Math.round((total / grand) * 100),
               };
             })
+            .sort((a, b) => b.total - a.total);
+        },
+        // タグ別集計。1エントリが複数タグを持つ場合は各タグに加算するため、
+        // 合計はレポート総時間を超えることがある(割合は総時間に対する比)。
+        reportRowsByTag() {
+          const totals = {};
+          for (const e of this.reportEntries) {
+            const tags = e.tags && e.tags.length ? e.tags : ["__none__"];
+            for (const t of tags) totals[t] = (totals[t] || 0) + this.durationOf(e);
+          }
+          const grand = this.reportTotal || 1;
+          return Object.entries(totals)
+            .map(([key, total]) => ({
+              id: "tag:" + key,
+              name: key === "__none__" ? "タグなし" : key,
+              color: key === "__none__" ? "#adb5bd" : this.tagColor(key),
+              total,
+              pct: Math.round((total / grand) * 100),
+            }))
             .sort((a, b) => b.total - a.total);
         },
       },
@@ -764,7 +1027,8 @@
           const top = (minutesOfDay(e.start) / 60) * this.hourHeight;
           const height = (this.durationOf(e) / 3600000) * this.hourHeight;
           const p = this.projectOf(e);
-          const color = (p && p.color) || "#4dabf7";
+          // プロジェクト無しはニュートラルなグレーにして、色付き(=プロジェクトあり)と区別する
+          const color = (p && p.color) || "#adb5bd";
           return {
             top: top + "px",
             height: Math.max(height, 16) + "px",
@@ -954,9 +1218,9 @@
           if (el && !el.contains(event.target)) this.closeEditor();
         },
         onKey(event) {
-          if (event.key === "Escape" && this.editingId) {
-            this.closeEditor();
-            return;
+          if (event.key === "Escape") {
+            if (this.editingId) { this.closeEditor(); return; }
+            if (this.menuOpen) { this.menuOpen = false; return; }
           }
           // 入力フィールド編集中はブラウザ既定の取り消しに任せる
           const tag = (document.activeElement && document.activeElement.tagName) || "";
@@ -1018,19 +1282,35 @@
         },
         rangeBounds(range) {
           const now = new Date();
-          if (range === "all") return { start: 0, end: Infinity };
-          const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-          if (range === "today") {
-            const end = new Date(startOfDay);
-            end.setDate(end.getDate() + 1);
-            return { start: startOfDay.getTime(), end: end.getTime() };
+          const y = now.getFullYear();
+          const mo = now.getMonth();
+          const d = now.getDate();
+          // その日を含む週の月曜0時を返す
+          const weekStart = (base) => {
+            const off = (base.getDay() + 6) % 7; // 月曜=0
+            return new Date(base.getFullYear(), base.getMonth(), base.getDate() - off);
+          };
+          switch (range) {
+            case "today":
+              return { start: new Date(y, mo, d).getTime(), end: new Date(y, mo, d + 1).getTime() };
+            case "week": {
+              const s = weekStart(now);
+              return { start: s.getTime(), end: new Date(s.getFullYear(), s.getMonth(), s.getDate() + 7).getTime() };
+            }
+            case "lastweek": {
+              const cur = weekStart(now);
+              const s = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() - 7);
+              return { start: s.getTime(), end: cur.getTime() };
+            }
+            case "month":
+              return { start: new Date(y, mo, 1).getTime(), end: new Date(y, mo + 1, 1).getTime() };
+            case "lastmonth":
+              return { start: new Date(y, mo - 1, 1).getTime(), end: new Date(y, mo, 1).getTime() };
+            case "year":
+              return { start: new Date(y, 0, 1).getTime(), end: new Date(y + 1, 0, 1).getTime() };
+            default:
+              return { start: 0, end: Infinity };
           }
-          const day = (startOfDay.getDay() + 6) % 7;
-          const start = new Date(startOfDay);
-          start.setDate(start.getDate() - day);
-          const end = new Date(start);
-          end.setDate(end.getDate() + 7);
-          return { start: start.getTime(), end: end.getTime() };
         },
         parseTags(text) {
           return text
@@ -1050,12 +1330,33 @@
           const d = new Date(iso);
           return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
         },
+        formatDate(iso) {
+          const d = new Date(iso);
+          const wd = ["日", "月", "火", "水", "木", "金", "土"][d.getDay()];
+          return `${d.getMonth() + 1}/${d.getDate()}(${wd})`;
+        },
+        // リスト行のドット色(プロジェクト色 or 既定)
+        entryColor(e) {
+          const p = this.projectOf(e);
+          return (p && p.color) || "#adb5bd";
+        },
+        // エントリのプロジェクト名(無ければ「プロジェクトなし」)
+        projectLabel(e) {
+          const p = this.projectOf(e);
+          return p ? p.name : "プロジェクトなし";
+        },
         minToClock(min) {
           const h = Math.floor(min / 60) % 24;
           return `${pad(h)}:${pad(min % 60)}`;
         },
         pad2(n) {
           return pad(n);
+        },
+        // タグ文字列から安定した色を生成(プロジェクトのような色指定が無いため)
+        tagColor(str) {
+          let h = 0;
+          for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
+          return `hsl(${h}, 55%, 55%)`;
         },
 
         // --- インポート/エクスポート ---
