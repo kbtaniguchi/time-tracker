@@ -166,6 +166,7 @@
       font-weight: 600;
       font-variant-numeric: tabular-nums;
     }
+    .entry-row__go { flex: 0 0 auto; font-size: 15px; padding: 4px 8px; }
 
     /* レポートの期間/集計切り替えに使うボタン */
     .tabs__btn {
@@ -282,7 +283,7 @@
       font-variant-numeric: tabular-nums;
     }
 
-    .cal__scroll { max-height: 70vh; overflow-y: auto; }
+    .cal__scroll { max-height: 82vh; overflow-y: auto; }
     .cal__body { display: flex; position: relative; }
 
     .cal__gutter { flex: 0 0 var(--gutter-w); position: relative; }
@@ -312,6 +313,23 @@
       position: absolute;
       left: 0; right: 0;
       border-bottom: 1px solid var(--border);
+    }
+    /* 現在時刻ライン */
+    .cal__now {
+      position: absolute;
+      left: 0; right: 0;
+      height: 0;
+      border-top: 2px solid var(--stop);
+      z-index: 4;
+      pointer-events: none;
+    }
+    .cal__now::before {
+      content: "";
+      position: absolute;
+      left: -4px; top: -5px;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--stop);
     }
 
     /* ブロック */
@@ -392,6 +410,9 @@
     /* ===== レポート ===== */
     .report__controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
     .report__grandtotal { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .report__chart { display: flex; justify-content: center; margin: 4px 0 18px; }
+    .report__pie { width: 168px; height: 168px; }
+    .report__pie path, .report__pie circle { stroke: var(--surface); stroke-width: 1; }
     .report-list { list-style: none; margin: 0; padding: 0; }
     .report-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; }
     .report-row__label {
@@ -417,7 +438,7 @@
     .report-row__pct { color: var(--muted); min-width: 40px; text-align: right; }
 
     /* ===== データ ===== */
-    .data__actions { display: flex; gap: 10px; margin: 16px 0; }
+    .data__actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
     .data__hint { color: var(--muted); font-size: 13px; }
 
     /* ===== 編集ポップオーバー ===== */
@@ -534,11 +555,13 @@
                 >
                   <div class="cal__hourline" v-for="h in 23" :key="h" :style="{ top: h * hourHeight + 'px' }"></div>
 
+                  <div v-if="isToday(d)" class="cal__now" :style="{ top: nowTop + 'px' }"></div>
+
                   <div
                     v-for="e in entriesByDay[di]"
                     :key="e.id"
                     class="cal__block"
-                    :class="{ 'is-selected': editingId === e.id }"
+                    :class="{ 'is-selected': editingId === e.id || selectedId === e.id }"
                     :style="blockStyle(e)"
                     @mousedown.stop="onBlockDown($event, e, di)"
                   >
@@ -596,6 +619,11 @@
                 <span v-for="t in e.tags" :key="t" class="cal__tag">{{ t }}</span>
               </span>
               <span class="entry-row__dur">{{ formatDuration(durationOf(e)) }}</span>
+              <button
+                class="icon-btn entry-row__go"
+                title="カレンダーで表示"
+                @click.stop="goToEntryInCalendar(e)"
+              >📅</button>
             </li>
           </ul>
         </div>
@@ -616,6 +644,14 @@
           <span class="report__grandtotal">合計 {{ formatDuration(reportTotal) }}</span>
         </div>
         <p v-if="reportTotal === 0" class="empty">対象期間の記録がありません。</p>
+        <div v-if="reportTotal > 0" class="report__chart">
+          <svg viewBox="0 0 120 120" class="report__pie" role="img" aria-label="集計の割合">
+            <template v-for="seg in pieData" :key="seg.id">
+              <circle v-if="seg.full" cx="60" cy="60" r="54" :fill="seg.color" />
+              <path v-else :d="seg.d" :fill="seg.color" />
+            </template>
+          </svg>
+        </div>
         <ul class="report-list">
           <li v-for="row in reportRows" :key="row.id" class="report-row">
             <span class="report-row__label">
@@ -668,9 +704,15 @@
         <div class="data__actions">
           <button class="btn btn--start" @click="exportJSON">エクスポート (JSON)</button>
           <button class="btn" @click="$refs.importInput.click()">インポート (JSON)</button>
+          <button class="btn" @click="$refs.togglInput.click()">Toggl CSV を取り込み</button>
           <input ref="importInput" type="file" accept="application/json" hidden @change="importJSON" />
+          <input ref="togglInput" type="file" accept=".csv,text/csv" hidden @change="importTogglCSV" />
         </div>
-        <p class="data__hint">インポートは現在のデータを置き換えます。</p>
+        <p class="data__hint">JSON インポートは現在のデータを置き換えます。Toggl CSV（Detailed report）は既存データに追加します。</p>
+        <div class="data__actions">
+          <button class="btn btn--stop" @click="clearAllData">全データを削除</button>
+        </div>
+        <p class="data__hint">全エントリとプロジェクトを削除します（元に戻すで復元できます）。</p>
       </section>
     </aside>
 
@@ -713,7 +755,7 @@
     const { useStorage, useDebouncedRefHistory } = VueUse;
 
     const STORAGE_KEY = "time-tracker-data";
-    const HOUR_HEIGHT = 48; // 1時間あたりの高さ(px)
+    const HOUR_HEIGHT = 64; // 1時間あたりの高さ(px)
     const SNAP_MIN = 15; // スナップ単位(分)
     const DEFAULT_DUR = 30; // クリック作成時の既定長さ(分)
 
@@ -761,6 +803,40 @@
           start: e.start,
           end: e.end || new Date(new Date(e.start).getTime() + 30 * 60000).toISOString(),
         }));
+    }
+
+    // 自動生成プロジェクトに割り当てる色
+    const PALETTE = [
+      "#4dabf7", "#20c997", "#fa5252", "#fab005", "#7950f2",
+      "#e64980", "#15aabf", "#82c91e", "#fd7e14", "#868e96",
+    ];
+
+    // RFC4180 風のCSVパーサ（引用符内のカンマ・改行・"" エスケープに対応）
+    function parseCSV(text) {
+      if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // BOM除去
+      const rows = [];
+      let row = [];
+      let field = "";
+      let inQuotes = false;
+      for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (inQuotes) {
+          if (c === '"') {
+            if (text[i + 1] === '"') { field += '"'; i++; }
+            else inQuotes = false;
+          } else field += c;
+        } else if (c === '"') {
+          inQuotes = true;
+        } else if (c === ",") {
+          row.push(field); field = "";
+        } else if (c === "\n") {
+          row.push(field); rows.push(row); row = []; field = "";
+        } else if (c !== "\r") {
+          field += c;
+        }
+      }
+      if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+      return rows;
     }
 
     createApp({
@@ -832,6 +908,8 @@
           lastProjectId: null, // 直近に使ったプロジェクト
           drag: null, // ドラッグ中の状態
           preview: null, // 作成中のプレビュー
+          selectedId: null, // リストから移動した直後に強調表示するエントリ
+          now: new Date(), // 現在時刻ライン用(定期更新)
           hourHeight: HOUR_HEIGHT,
           _paused: false, // ドラフト編集中に履歴記録を止めているか
           ranges: [
@@ -852,6 +930,10 @@
       computed: {
         bodyHeight() {
           return 24 * this.hourHeight;
+        },
+        // 現在時刻ラインの縦位置(px)
+        nowTop() {
+          return ((this.now.getHours() * 60 + this.now.getMinutes()) / 60) * this.hourHeight;
         },
         weekDays() {
           const base = this.viewDate;
@@ -982,6 +1064,24 @@
               pct: Math.round((total / grand) * 100),
             }))
             .sort((a, b) => b.total - a.total);
+        },
+        // 円グラフ用セグメント。表示行(reportRows)の合計に対する各割合で描画。
+        pieData() {
+          const rows = this.reportRows;
+          const sum = rows.reduce((s, r) => s + r.total, 0);
+          if (sum <= 0) return [];
+          let acc = 0;
+          return rows.map((row) => {
+            const frac = row.total / sum;
+            const seg = {
+              id: row.id,
+              color: row.color,
+              d: this.arcPath(60, 60, 54, acc, acc + frac),
+              full: frac >= 0.999,
+            };
+            acc += frac;
+            return seg;
+          });
         },
       },
 
@@ -1345,6 +1445,22 @@
           const p = this.projectOf(e);
           return p ? p.name : "プロジェクトなし";
         },
+        // リストから該当エントリのカレンダー(その週・時刻)へ移動して一時強調
+        goToEntryInCalendar(e) {
+          this.entryView = "calendar";
+          this.viewDate = new Date(e.start);
+          this.selectedId = e.id;
+          clearTimeout(this._selectTimer);
+          this._selectTimer = setTimeout(() => {
+            this.selectedId = null;
+          }, 2000);
+          this.$nextTick(() => {
+            if (this.$refs.scroll) {
+              const startMin = minutesOfDay(e.start);
+              this.$refs.scroll.scrollTop = Math.max(0, (startMin / 60) * this.hourHeight - this.hourHeight);
+            }
+          });
+        },
         minToClock(min) {
           const h = Math.floor(min / 60) % 24;
           return `${pad(h)}:${pad(min % 60)}`;
@@ -1357,6 +1473,17 @@
           let h = 0;
           for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
           return `hsl(${h}, 55%, 55%)`;
+        },
+        // 円グラフの扇形パス(startFrac〜endFrac は 0〜1、12時方向起点・時計回り)
+        arcPath(cx, cy, r, startFrac, endFrac) {
+          const a0 = startFrac * 2 * Math.PI - Math.PI / 2;
+          const a1 = endFrac * 2 * Math.PI - Math.PI / 2;
+          const x0 = (cx + r * Math.cos(a0)).toFixed(2);
+          const y0 = (cy + r * Math.sin(a0)).toFixed(2);
+          const x1 = (cx + r * Math.cos(a1)).toFixed(2);
+          const y1 = (cy + r * Math.sin(a1)).toFixed(2);
+          const large = endFrac - startFrac > 0.5 ? 1 : 0;
+          return `M ${cx} ${cy} L ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1} Z`;
         },
 
         // --- インポート/エクスポート ---
@@ -1391,6 +1518,101 @@
           };
           reader.readAsText(file);
         },
+        // 全データ削除(確認あり・元に戻すで復元可能)
+        clearAllData() {
+          if (!this.entries.length && !this.projects.length) {
+            alert("削除するデータがありません。");
+            return;
+          }
+          if (!confirm("すべてのエントリとプロジェクトを削除します。よろしいですか？\n（元に戻す Ctrl+Z で復元できます）")) {
+            return;
+          }
+          this.closeEditor();
+          this.entries = [];
+          this.projects = [];
+          this.lastProjectId = null;
+        },
+        // Toggl Track の Detailed report (CSV) を既存データに追加で取り込む
+        importTogglCSV(event) {
+          const file = event.target.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            try {
+              const rows = parseCSV(reader.result).filter(
+                (r) => r.length > 1 || (r.length === 1 && r[0] !== "")
+              );
+              if (rows.length < 2) throw new Error("データ行がありません");
+              const header = rows[0].map((h) => h.trim());
+              const idx = (name) => header.indexOf(name);
+              const ci = {
+                project: idx("Project"),
+                description: idx("Description"),
+                startDate: idx("Start date"),
+                startTime: idx("Start time"),
+                endDate: idx("End date"),
+                endTime: idx("End time"),
+                tags: idx("Tags"),
+              };
+              if (ci.startDate < 0 || ci.startTime < 0 || ci.endDate < 0 || ci.endTime < 0) {
+                throw new Error("Toggl の Detailed report（CSV）の列が見つかりません");
+              }
+              // 既存プロジェクトは名前(大小無視)で照合。無ければ生成する。
+              const projByName = new Map(this.projects.map((p) => [p.name.toLowerCase(), p]));
+              const newProjects = [];
+              const getProjectId = (name) => {
+                const trimmed = (name || "").trim();
+                if (!trimmed) return null;
+                const key = trimmed.toLowerCase();
+                const found = projByName.get(key);
+                if (found) return found.id;
+                const proj = {
+                  id: uuid(),
+                  name: trimmed,
+                  color: PALETTE[(this.projects.length + newProjects.length) % PALETTE.length],
+                };
+                newProjects.push(proj);
+                projByName.set(key, proj);
+                return proj.id;
+              };
+              const newEntries = [];
+              let skipped = 0;
+              for (let r = 1; r < rows.length; r++) {
+                const row = rows[r];
+                // 日付+時刻はローカル時刻として解釈
+                const start = new Date(`${row[ci.startDate]}T${row[ci.startTime]}`);
+                const end = new Date(`${row[ci.endDate]}T${row[ci.endTime]}`);
+                if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
+                  skipped++;
+                  continue;
+                }
+                newEntries.push({
+                  id: uuid(),
+                  description: ci.description >= 0 ? (row[ci.description] || "").trim() : "",
+                  projectId: ci.project >= 0 ? getProjectId(row[ci.project]) : null,
+                  tags: ci.tags >= 0 ? this.parseTags(row[ci.tags] || "") : [],
+                  start: start.toISOString(),
+                  end: end.toISOString(),
+                });
+              }
+              if (!newEntries.length) throw new Error("取り込めるエントリがありませんでした");
+              const msg =
+                `${newEntries.length} 件のエントリ` +
+                (newProjects.length ? `と ${newProjects.length} 件の新規プロジェクト` : "") +
+                "を既存データに追加します。よろしいですか？" +
+                (skipped ? `\n（時刻が不正な ${skipped} 件はスキップ）` : "");
+              if (!confirm(msg)) return;
+              if (newProjects.length) this.projects = [...this.projects, ...newProjects];
+              this.entries = [...this.entries, ...newEntries];
+              alert(`${newEntries.length} 件のエントリを取り込みました。`);
+            } catch (err) {
+              alert("Toggl CSV の取り込みに失敗しました: " + err.message);
+            } finally {
+              event.target.value = "";
+            }
+          };
+          reader.readAsText(file);
+        },
       },
 
       mounted() {
@@ -1402,6 +1624,10 @@
         window.addEventListener("mouseup", this._onUp);
         window.addEventListener("mousedown", this._onOutside);
         window.addEventListener("keydown", this._onKey);
+        // 現在時刻ラインを1分ごとに更新
+        this._nowTimer = setInterval(() => {
+          this.now = new Date();
+        }, 60000);
         // 7:00 あたりが見えるようにスクロール
         this.$nextTick(() => {
           if (this.$refs.scroll) this.$refs.scroll.scrollTop = 7 * this.hourHeight;
@@ -1409,6 +1635,7 @@
       },
 
       unmounted() {
+        clearInterval(this._nowTimer);
         window.removeEventListener("mousemove", this._onMove);
         window.removeEventListener("mouseup", this._onUp);
         window.removeEventListener("mousedown", this._onOutside);
