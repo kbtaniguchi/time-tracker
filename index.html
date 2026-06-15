@@ -116,6 +116,32 @@
     .section-head .section-title { margin: 0; padding: 0; border: 0; }
     .section-head__tools { display: flex; align-items: center; gap: 4px; }
 
+    /* セグメンテッドコントロール（カレンダー / リスト切替） */
+    .seg {
+      display: inline-flex;
+      background: #eceef0;
+      border-radius: 8px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .seg__btn {
+      border: none;
+      background: transparent;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      color: var(--muted);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .seg__btn:hover:not(.is-active) { color: var(--text); }
+    .seg__btn.is-active {
+      background: var(--surface);
+      color: var(--text);
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+    }
+
     /* ===== エントリー リスト表示 ===== */
     .entry-list { list-style: none; margin: 0; padding: 0; }
     .entry-row {
@@ -498,13 +524,15 @@
             <button class="icon-btn" :disabled="!canUndo" title="元に戻す (Ctrl+Z)" @click="undo">↶</button>
             <button class="icon-btn" :disabled="!canRedo" title="やり直し (Ctrl+Shift+Z)" @click="redo">↷</button>
             <span class="cal-nav__sep"></span>
-            <button
-              v-for="v in entryViews"
-              :key="v.key"
-              class="tabs__btn"
-              :class="{ 'is-active': entryView === v.key }"
-              @click="entryView = v.key"
-            >{{ v.label }}</button>
+            <div class="seg">
+              <button
+                v-for="v in entryViews"
+                :key="v.key"
+                class="seg__btn"
+                :class="{ 'is-active': entryView === v.key }"
+                @click="entryView = v.key"
+              >{{ v.label }}</button>
+            </div>
           </div>
         </div>
 
