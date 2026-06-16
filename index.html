@@ -626,6 +626,7 @@
                     class="cal__block"
                     :class="{ 'is-selected': editingId === e.id || selectedId === e.id }"
                     :style="blockStyle(e)"
+                    :title="entryTooltip(e)"
                     @mousedown.stop="onBlockDown($event, e, di)"
                   >
                     <div class="cal__resize cal__resize--top" @mousedown.stop="onResizeDown($event, e, di, 'top')"></div>
@@ -687,7 +688,7 @@
               <span class="entry-row__tags">
                 <span v-for="t in e.tags" :key="t" class="cal__tag">{{ t }}</span>
               </span>
-              <span class="entry-row__dur">{{ formatDuration(durationOf(e)) }}</span>
+              <span class="entry-row__dur">{{ formatHours(durationOf(e)) }}</span>
               <button
                 class="icon-btn entry-row__go"
                 title="カレンダーで表示"
@@ -1074,7 +1075,7 @@
           entryView: "calendar", // エントリーの表示: calendar | list
           listRange: "week", // リスト表示の集計期間
           listQuery: "", // リスト表示の絞り込み文字列
-          reportRange: "today",
+          reportRange: "week",
           reportGroupBy: "project", // レポートの集計軸: project | tag
           menuOpen: false, // 管理ドロワー(プロジェクト/データ)の開閉
           fsSupported, // File System Access API 対応ブラウザか
@@ -1651,13 +1652,7 @@
         },
 
         // --- フォーマット ---
-        formatDuration(ms) {
-          const totalSec = Math.floor(ms / 1000);
-          const h = Math.floor(totalSec / 3600);
-          const m = Math.floor((totalSec % 3600) / 60);
-          return `${h}:${pad(m)}`;
-        },
-        // 合計表示用: 10進の時間(例 1.50 h)
+        // 所要時間・合計表示用: 10進の時間(例 1.50 h)
         formatHours(ms) {
           return (ms / 3600000).toFixed(2) + " h";
         },
@@ -1679,6 +1674,14 @@
         projectLabel(e) {
           const p = this.projectOf(e);
           return p ? p.name : "プロジェクトなし";
+        },
+        // ブロックのホバー用ツールチップ文字列(短いブロックでも全情報を確認できる)
+        entryTooltip(e) {
+          const time = `${this.formatClock(e.start)}–${this.formatClock(e.end)} (${this.formatHours(this.durationOf(e))})`;
+          const tags = e.tags && e.tags.length ? `タグ: ${e.tags.join(", ")}` : "";
+          return [time, this.projectLabel(e), e.description || "(無題)", tags]
+            .filter(Boolean)
+            .join("\n");
         },
         // 補完候補を選択(説明とプロジェクトを反映して候補を閉じる)
         applyDescSuggestion(s) {
