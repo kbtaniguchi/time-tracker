@@ -812,6 +812,7 @@
         <div class="field-suggest">
           <input
             type="text"
+            ref="descInput"
             v-model="editForm.description"
             placeholder="何をした？"
             autocomplete="off"
@@ -852,14 +853,14 @@
         </select>
       </label>
       <label class="field">タグ (カンマ区切り)
-        <input type="text" v-model="editForm.tagsText" placeholder="例: 開発, 会議" />
+        <input type="text" v-model="editForm.tagsText" placeholder="例: 開発, 会議" @keydown.enter.prevent="saveEdit" />
       </label>
       <div class="field-row">
         <label class="field">開始
-          <input type="time" v-model="editForm.startTime" />
+          <input type="time" v-model="editForm.startTime" @keydown.enter.prevent="saveEdit" />
         </label>
         <label class="field">終了
-          <input type="time" v-model="editForm.endTime" />
+          <input type="time" v-model="editForm.endTime" @keydown.enter.prevent="saveEdit" />
         </label>
       </div>
       <div class="popover__actions">
@@ -1468,7 +1469,13 @@
             endTime: this.formatClock(entry.end),
           };
           // ドラフト確定までは履歴に記録しない
-          if (isDraft) this.pauseHistory();
+          if (isDraft) {
+            this.pauseHistory();
+            // 新規作成時は説明欄にフォーカス
+            this.$nextTick(() => {
+              if (this.$refs.descInput) this.$refs.descInput.focus();
+            });
+          }
         },
         saveEdit() {
           const e = this.entries.find((x) => x.id === this.editingId);
@@ -1671,10 +1678,14 @@
           this.descActiveIndex = i < 0 ? (delta > 0 ? 0 : n - 1) : (i + delta + n) % n;
         },
         descEnter(event) {
+          event.preventDefault();
           const s = this.descSuggestions[this.descActiveIndex];
           if (this.descFocus && s) {
-            event.preventDefault();
+            // 候補をキーボード選択中なら、その候補を確定
             this.applyDescSuggestion(s);
+          } else {
+            // 候補未選択なら保存
+            this.saveEdit();
           }
         },
         descEsc(event) {
