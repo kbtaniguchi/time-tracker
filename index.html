@@ -143,6 +143,7 @@
     }
 
     /* ===== エントリー リスト表示 ===== */
+    .list-filter { flex: 1 1 160px; min-width: 120px; }
     .entry-list { list-style: none; margin: 0; padding: 0; }
     .entry-row {
       display: flex;
@@ -577,7 +578,7 @@
           <button class="btn" @click="goToday">今週</button>
           <button class="icon-btn" title="次の週" @click="nextWeek">›</button>
           <span class="cal-nav__label">{{ weekLabel }}</span>
-          <span class="cal-nav__total">週合計 {{ formatDuration(weekTotal) }}</span>
+          <span class="cal-nav__total">週合計 {{ formatHours(weekTotal) }}</span>
         </div>
 
         <div class="cal">
@@ -594,7 +595,7 @@
               >
                 <span class="cal__dayhead-wd">{{ weekdayLabel(d) }}</span>
                 <span class="cal__dayhead-date">{{ d.getDate() }}</span>
-                <span class="cal__dayhead-total">{{ dayTotals[i] ? formatDuration(dayTotals[i]) : '' }}</span>
+                <span class="cal__dayhead-total">{{ dayTotals[i] ? formatHours(dayTotals[i]) : '' }}</span>
               </div>
             </div>
 
@@ -660,7 +661,13 @@
             <select v-model="listRange" class="report__range">
               <option v-for="r in ranges" :key="r.key" :value="r.key">{{ r.label }}</option>
             </select>
-            <span class="report__grandtotal">合計 {{ formatDuration(listTotal) }}</span>
+            <input
+              type="text"
+              v-model="listQuery"
+              class="list-filter"
+              placeholder="説明・タグ・プロジェクトで絞り込み"
+            />
+            <span class="report__grandtotal">{{ listEntries.length }}件・合計 {{ formatHours(listTotal) }}</span>
           </div>
           <p v-if="listEntries.length === 0" class="empty">対象期間のエントリーがありません。</p>
           <ul class="entry-list">
@@ -703,7 +710,7 @@
           <select v-model="reportGroupBy" class="report__range">
             <option v-for="g in groupModes" :key="g.key" :value="g.key">{{ g.label }}</option>
           </select>
-          <span class="report__grandtotal">合計 {{ formatDuration(reportTotal) }}</span>
+          <span class="report__grandtotal">合計 {{ formatHours(reportTotal) }}</span>
         </div>
         <p v-if="reportTotal === 0" class="empty">対象期間の記録がありません。</p>
         <div v-if="reportTotal > 0" class="report__chart">
@@ -723,7 +730,7 @@
             <div class="report-row__barwrap">
               <div class="report-row__bar" :style="{ width: row.pct + '%', background: row.color }"></div>
             </div>
-            <span class="report-row__dur">{{ formatDuration(row.total) }}</span>
+            <span class="report-row__dur">{{ formatHours(row.total) }}</span>
             <span class="report-row__pct">{{ row.pct }}%</span>
           </li>
         </ul>
@@ -1066,6 +1073,7 @@
           editorPos: { x: 0, y: 0 }, // ポップオーバーの表示位置
           entryView: "calendar", // エントリーの表示: calendar | list
           listRange: "week", // リスト表示の集計期間
+          listQuery: "", // リスト表示の絞り込み文字列
           reportRange: "today",
           reportGroupBy: "project", // レポートの集計軸: project | tag
           menuOpen: false, // 管理ドロワー(プロジェクト/データ)の開閉
@@ -1180,10 +1188,17 @@
         // リスト表示用: 指定期間で絞り込み、開始時刻の新しい順
         listEntries() {
           const { start, end } = this.rangeBounds(this.listRange);
+          const q = this.listQuery.trim().toLowerCase();
           return this.entries
             .filter((e) => {
               const s = new Date(e.start).getTime();
-              return s >= start && s < end;
+              if (s < start || s >= end) return false;
+              if (!q) return true;
+              const p = this.projectOf(e);
+              const hay = [e.description || "", p ? p.name : "", ...(e.tags || [])]
+                .join(" ")
+                .toLowerCase();
+              return hay.includes(q);
             })
             .sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime());
         },
@@ -1641,6 +1656,10 @@
           const h = Math.floor(totalSec / 3600);
           const m = Math.floor((totalSec % 3600) / 60);
           return `${h}:${pad(m)}`;
+        },
+        // 合計表示用: 10進の時間(例 1.50 h)
+        formatHours(ms) {
+          return (ms / 3600000).toFixed(2) + " h";
         },
         formatClock(iso) {
           const d = new Date(iso);
