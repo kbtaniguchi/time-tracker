@@ -503,6 +503,39 @@
     .field input, .field select { font-size: 14px; color: var(--text); width: 100%; min-width: 0; }
     .field-row { display: flex; flex-wrap: wrap; gap: 12px; }
     .field-row .field { flex: 1 1 8rem; min-width: 0; }
+
+    /* 説明欄の補完候補 */
+    .field-suggest { position: relative; }
+    .suggest {
+      position: absolute;
+      top: 100%; left: 0; right: 0;
+      margin: 2px 0 0;
+      padding: 4px;
+      list-style: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
+      max-height: 280px;
+      overflow-y: auto;
+      z-index: 10;
+    }
+    .suggest__item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .suggest__item:hover,
+    .suggest__item.is-active { background: #e7f5ff; }
+    .suggest__main { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+    .suggest__desc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+    .suggest__tags { display: flex; gap: 3px; flex: 0 1 auto; overflow: hidden; }
+    .suggest__proj { display: flex; align-items: center; gap: 3px; color: var(--muted); white-space: nowrap; flex: 0 0 auto; }
   </style>
 </head>
 <body>
@@ -776,7 +809,41 @@
         <button class="icon-btn" title="閉じる" @click="closeEditor">×</button>
       </div>
       <label class="field">説明
-        <input type="text" v-model="editForm.description" placeholder="何をした？" />
+        <div class="field-suggest">
+          <input
+            type="text"
+            v-model="editForm.description"
+            placeholder="何をした？"
+            autocomplete="off"
+            @focus="descFocus = true"
+            @input="descFocus = true; descActiveIndex = -1"
+            @blur="descFocus = false"
+            @keydown.down.prevent="descMove(1)"
+            @keydown.up.prevent="descMove(-1)"
+            @keydown.enter="descEnter($event)"
+            @keydown.esc="descEsc($event)"
+          />
+          <ul v-if="descFocus && descSuggestions.length" class="suggest">
+            <li
+              v-for="(s, i) in descSuggestions"
+              :key="i"
+              class="suggest__item"
+              :class="{ 'is-active': i === descActiveIndex }"
+              @mouseenter="descActiveIndex = i"
+              @mousedown.stop.prevent="applyDescSuggestion(s)"
+            >
+              <span class="suggest__main">
+                <span class="suggest__desc">{{ s.description }}</span>
+                <span v-if="s.tags.length" class="suggest__tags">
+                  <span v-for="t in s.tags" :key="t" class="cal__tag">{{ t }}</span>
+                </span>
+              </span>
+              <span v-if="s.projectName" class="suggest__proj">
+                <span class="dot" :style="{ background: s.color }"></span>{{ s.projectName }}
+              </span>
+            </li>
+          </ul>
+        </div>
       </label>
       <label class="field">プロジェクト
         <select v-model="editForm.projectId">
@@ -789,10 +856,10 @@
       </label>
       <div class="field-row">
         <label class="field">開始
-          <input type="datetime-local" v-model="editForm.start" />
+          <input type="time" v-model="editForm.startTime" />
         </label>
         <label class="field">終了
-          <input type="datetime-local" v-model="editForm.end" />
+          <input type="time" v-model="editForm.endTime" />
         </label>
       </div>
       <div class="popover__actions">
@@ -821,15 +888,6 @@
 
     function pad(n) {
       return String(n).padStart(2, "0");
-    }
-
-    function toLocalInput(iso) {
-      const d = new Date(iso);
-      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    }
-
-    function fromLocalInput(v) {
-      return new Date(v).toISOString();
     }
 
     function dateKey(iso) {
@@ -1001,7 +1059,9 @@
           newProject: { name: "", color: "#4dabf7" },
           editingId: null,
           draftId: null, // 新規作成して未保存のエントリ(閉じたら破棄)
-          editForm: { description: "", projectId: null, tagsText: "", start: "", end: "" },
+          editForm: { description: "", projectId: null, tagsText: "", startTime: "", endTime: "" },
+          descFocus: false, // 説明欄の補完候補を表示中か
+          descActiveIndex: -1, // 補完候補のキーボード選択位置(-1=未選択)
           editorPos: { x: 0, y: 0 }, // ポップオーバーの表示位置
           entryView: "calendar", // エントリーの表示: calendar | list
           listRange: "week", // リスト表示の集計期間
@@ -1079,6 +1139,36 @@
             for (const e of arr) total += this.durationOf(e);
           }
           return total;
+        },
+        // 説明欄の補完候補: 過去約1か月のエントリから一致する説明(＋プロジェクト)を抽出
+        descSuggestions() {
+          const q = this.editForm.description.trim().toLowerCase();
+          if (!q) return [];
+          const cutoff = Date.now() - 31 * 24 * 3600 * 1000;
+          const recent = [...this.entries]
+            .filter((e) => new Date(e.start).getTime() >= cutoff && e.id !== this.editingId)
+            .sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime());
+          const seen = new Set();
+          const out = [];
+          for (const e of recent) {
+            const d = (e.description || "").trim();
+            if (!d) continue;
+            const dl = d.toLowerCase();
+            if (dl === q || !dl.includes(q)) continue;
+            const key = dl + "|" + (e.projectId || "");
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const p = this.projectOf(e);
+            out.push({
+              description: d,
+              projectId: e.projectId || null,
+              projectName: p ? p.name : null,
+              color: p ? p.color : null,
+              tags: Array.isArray(e.tags) ? e.tags : [],
+            });
+            if (out.length >= 8) break;
+          }
+          return out;
         },
         // 曜日ヘッダ用: 各日(0〜6)のエントリ合計時間
         dayTotals() {
@@ -1366,14 +1456,16 @@
           if (!entry) return;
           this.discardDraft(); // 直前の未保存ドラフトがあれば破棄
           if (typeof x === "number" && typeof y === "number") this.editorPos = { x, y };
+          this.descFocus = false;
+          this.descActiveIndex = -1;
           this.editingId = id;
           this.draftId = isDraft ? id : null;
           this.editForm = {
             description: entry.description,
             projectId: entry.projectId,
             tagsText: (entry.tags || []).join(", "),
-            start: toLocalInput(entry.start),
-            end: toLocalInput(entry.end),
+            startTime: this.formatClock(entry.start),
+            endTime: this.formatClock(entry.end),
           };
           // ドラフト確定までは履歴に記録しない
           if (isDraft) this.pauseHistory();
@@ -1381,17 +1473,23 @@
         saveEdit() {
           const e = this.entries.find((x) => x.id === this.editingId);
           if (!e) return;
-          const start = fromLocalInput(this.editForm.start);
-          const end = fromLocalInput(this.editForm.end);
-          if (new Date(end) <= new Date(start)) {
+          if (!this.editForm.startTime || !this.editForm.endTime) {
+            alert("開始・終了の時刻を入力してください。");
+            return;
+          }
+          // 日付は元エントリのものを維持し、時刻だけ差し替える
+          const dateStr = dateKey(e.start);
+          const start = new Date(`${dateStr}T${this.editForm.startTime}`);
+          const end = new Date(`${dateStr}T${this.editForm.endTime}`);
+          if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) {
             alert("終了時刻は開始時刻より後にしてください。");
             return;
           }
           e.description = this.editForm.description.trim();
           e.projectId = this.editForm.projectId;
           e.tags = this.parseTags(this.editForm.tagsText);
-          e.start = start;
-          e.end = end;
+          e.start = start.toISOString();
+          e.end = end.toISOString();
           this.lastProjectId = e.projectId;
           const wasDraft = this.draftId === this.editingId;
           this.draftId = null;
@@ -1555,6 +1653,36 @@
         projectLabel(e) {
           const p = this.projectOf(e);
           return p ? p.name : "プロジェクトなし";
+        },
+        // 補完候補を選択(説明とプロジェクトを反映して候補を閉じる)
+        applyDescSuggestion(s) {
+          this.editForm.description = s.description;
+          if (s.projectId) this.editForm.projectId = s.projectId;
+          if (s.tags && s.tags.length) this.editForm.tagsText = s.tags.join(", ");
+          this.descFocus = false;
+          this.descActiveIndex = -1;
+        },
+        // 候補のキーボード操作
+        descMove(delta) {
+          const n = this.descSuggestions.length;
+          if (!n) return;
+          this.descFocus = true;
+          const i = this.descActiveIndex;
+          this.descActiveIndex = i < 0 ? (delta > 0 ? 0 : n - 1) : (i + delta + n) % n;
+        },
+        descEnter(event) {
+          const s = this.descSuggestions[this.descActiveIndex];
+          if (this.descFocus && s) {
+            event.preventDefault();
+            this.applyDescSuggestion(s);
+          }
+        },
+        descEsc(event) {
+          if (this.descFocus) {
+            this.descFocus = false;
+            this.descActiveIndex = -1;
+            event.stopPropagation(); // 全体のEscクローズより先に候補だけ閉じる
+          }
         },
         // リストから該当エントリのカレンダー(その週・時刻)へ移動して一時強調
         goToEntryInCalendar(e) {
