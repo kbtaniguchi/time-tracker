@@ -466,6 +466,7 @@
     /* ===== データ ===== */
     .data__actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
     .data__hint { color: var(--muted); font-size: 13px; }
+    .data__subtitle { font-size: 14px; margin: 20px 0 6px; }
 
     /* ===== 編集ポップオーバー ===== */
     .popover {
@@ -728,7 +729,31 @@
       <!-- ===== データ管理 ===== -->
       <section class="data">
         <h2 class="section-title">データ</h2>
-        <p>localStorage に自動保存されています。バックアップや移行に JSON を使えます。</p>
+        <p>localStorage に自動保存されます。さらにファイル同期や JSON でバックアップ・移行ができます。</p>
+
+        <h3 class="data__subtitle">ファイル同期</h3>
+        <template v-if="!fsSupported">
+          <p class="data__hint">このブラウザはファイルへの自動保存（File System Access API）に未対応です。Chrome / Edge 系でご利用ください（エクスポート/インポートは利用可能）。</p>
+        </template>
+        <template v-else-if="fileName">
+          <p class="data__hint">
+            接続中: <strong>{{ fileName }}</strong> — 変更を自動保存します。
+            <span v-if="fsNeedsReconnect">（ページを開き直したため、権限の再許可が必要です）</span>
+          </p>
+          <div class="data__actions">
+            <button v-if="fsNeedsReconnect" class="btn btn--start" @click="reconnectFile">再接続</button>
+            <button class="btn" @click="loadFromFile">ファイルから読み込み</button>
+            <button class="btn" @click="unlinkFile">接続を解除</button>
+          </div>
+        </template>
+        <template v-else>
+          <div class="data__actions">
+            <button class="btn btn--start" @click="linkFile">ファイルに接続して自動保存</button>
+          </div>
+          <p class="data__hint">JSON ファイルを1つ選ぶと、以後の変更がそのファイルへ自動保存されます。Drive / iCloud などの同期フォルダに置けば擬似的な端末間同期にもなります。</p>
+        </template>
+
+        <h3 class="data__subtitle">エクスポート / インポート</h3>
         <div class="data__actions">
           <button class="btn btn--start" @click="exportJSON">エクスポート (JSON)</button>
           <button class="btn" @click="$refs.importInput.click()">インポート (JSON)</button>
@@ -780,7 +805,7 @@
 
   <script>
     const { createApp, computed } = Vue;
-    const { useStorage, useDebouncedRefHistory } = VueUse;
+    const { useStorage, useDebouncedRefHistory, watchDebounced } = VueUse;
 
     const STORAGE_KEY = "time-tracker-data";
     const HOUR_HEIGHT = 64; // 1時間あたりの高さ(px)
@@ -867,6 +892,50 @@
       return rows;
     }
 
+    // ===== ファイル同期 (File System Access API) =====
+    const fsSupported = typeof window !== "undefined" && "showSaveFilePicker" in window;
+    let fileHandle = null; // 接続中のファイルハンドル
+    let fileWritable = false; // 書き込み権限が許可されているか
+
+    // ハンドルへ JSON を書き込む
+    async function fsWrite(handle, dataObj) {
+      const w = await handle.createWritable();
+      await w.write(JSON.stringify(dataObj, null, 2));
+      await w.close();
+    }
+
+    // ハンドルを再読込できるよう IndexedDB に保存する(ハンドルは構造化複製可能)
+    function idbReq(req) {
+      return new Promise((res, rej) => {
+        req.onsuccess = () => res(req.result);
+        req.onerror = () => rej(req.error);
+      });
+    }
+    function idbOpen() {
+      return new Promise((res, rej) => {
+        const r = indexedDB.open("time-tracker-fs", 1);
+        r.onupgradeneeded = () => r.result.createObjectStore("kv");
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      });
+    }
+    async function idbSet(key, val) {
+      const db = await idbOpen();
+      await idbReq(db.transaction("kv", "readwrite").objectStore("kv").put(val, key));
+      db.close();
+    }
+    async function idbGet(key) {
+      const db = await idbOpen();
+      const v = await idbReq(db.transaction("kv", "readonly").objectStore("kv").get(key));
+      db.close();
+      return v;
+    }
+    async function idbDel(key) {
+      const db = await idbOpen();
+      await idbReq(db.transaction("kv", "readwrite").objectStore("kv").delete(key));
+      db.close();
+    }
+
     createApp({
       // 永続化(localStorage)と履歴(undo/redo)を VueUse に委譲する。
       setup() {
@@ -904,6 +973,17 @@
           set: (v) => { store.value.projects = v; },
         });
 
+        // ファイル接続中は、変更を1秒デバウンスで接続ファイルへ自動保存
+        watchDebounced(
+          store,
+          () => {
+            if (fileHandle && fileWritable) {
+              fsWrite(fileHandle, store.value).catch((e) => console.error("ファイル自動保存に失敗", e));
+            }
+          },
+          { deep: true, debounce: 1000 }
+        );
+
         return {
           entries,
           projects,
@@ -928,6 +1008,9 @@
           reportRange: "today",
           reportGroupBy: "project", // レポートの集計軸: project | tag
           menuOpen: false, // 管理ドロワー(プロジェクト/データ)の開閉
+          fsSupported, // File System Access API 対応ブラウザか
+          fileName: null, // 接続中ファイル名(未接続は null)
+          fsNeedsReconnect: false, // 再読込後に権限の再許可が必要か
           entryViews: [
             { key: "calendar", label: "カレンダー" },
             { key: "list", label: "リスト" },
@@ -1641,6 +1724,72 @@
           };
           reader.readAsText(file);
         },
+
+        // ===== ファイル同期 (File System Access API) =====
+        // ファイルを選び、以後の変更を自動保存する
+        async linkFile() {
+          try {
+            const handle = await window.showSaveFilePicker({
+              suggestedName: "time-tracker.json",
+              types: [{ description: "JSON", accept: { "application/json": [".json"] } }],
+            });
+            await fsWrite(handle, { entries: this.entries, projects: this.projects });
+            fileHandle = handle;
+            fileWritable = true;
+            await idbSet("fileHandle", handle);
+            this.fileName = handle.name;
+            this.fsNeedsReconnect = false;
+          } catch (err) {
+            if (err && err.name !== "AbortError") alert("ファイル接続に失敗しました: " + err.message);
+          }
+        },
+        // 再読込後に書き込み権限を再取得する
+        async reconnectFile() {
+          if (!fileHandle) return;
+          try {
+            const perm = await fileHandle.requestPermission({ mode: "readwrite" });
+            if (perm === "granted") {
+              fileWritable = true;
+              this.fsNeedsReconnect = false;
+              await fsWrite(fileHandle, { entries: this.entries, projects: this.projects });
+            } else {
+              alert("ファイルへの書き込み権限が許可されませんでした。");
+            }
+          } catch (err) {
+            alert("再接続に失敗しました: " + err.message);
+          }
+        },
+        // 接続中ファイルの内容で現在のデータを置き換える
+        async loadFromFile() {
+          if (!fileHandle) return;
+          try {
+            if (this.fsNeedsReconnect) {
+              const perm = await fileHandle.requestPermission({ mode: "readwrite" });
+              if (perm !== "granted") { alert("権限が許可されませんでした。"); return; }
+              fileWritable = true;
+              this.fsNeedsReconnect = false;
+            }
+            const file = await fileHandle.getFile();
+            const data = JSON.parse(await file.text());
+            if (!Array.isArray(data.entries) || !Array.isArray(data.projects)) {
+              throw new Error("形式が正しくありません");
+            }
+            if (!confirm("接続中のファイルの内容で現在のデータを置き換えます。よろしいですか？")) return;
+            this.closeEditor();
+            this.projects = data.projects;
+            this.entries = data.entries;
+          } catch (err) {
+            alert("ファイルからの読み込みに失敗しました: " + err.message);
+          }
+        },
+        // 接続を解除する(ファイル自体は残る)
+        async unlinkFile() {
+          fileHandle = null;
+          fileWritable = false;
+          this.fileName = null;
+          this.fsNeedsReconnect = false;
+          try { await idbDel("fileHandle"); } catch (e) { /* noop */ }
+        },
       },
 
       mounted() {
@@ -1656,6 +1805,23 @@
         this._nowTimer = setInterval(() => {
           this.now = new Date();
         }, 60000);
+        // 前回接続したファイルがあれば復元(権限が残っていれば自動保存を再開)
+        if (this.fsSupported) {
+          idbGet("fileHandle")
+            .then(async (h) => {
+              if (!h) return;
+              fileHandle = h;
+              this.fileName = h.name;
+              try {
+                const perm = await h.queryPermission({ mode: "readwrite" });
+                fileWritable = perm === "granted";
+                this.fsNeedsReconnect = !fileWritable;
+              } catch (e) {
+                this.fsNeedsReconnect = true;
+              }
+            })
+            .catch(() => {});
+        }
         // 7:00 あたりが見えるようにスクロール
         this.$nextTick(() => {
           if (this.$refs.scroll) this.$refs.scroll.scrollTop = 7 * this.hourHeight;
