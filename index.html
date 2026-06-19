@@ -18,6 +18,7 @@
       --accent: #4dabf7;
       --start: #20c997;
       --stop: #fa5252;
+      --warn: #f08c00;
       --radius: 8px;
       --gutter-w: 56px;
     }
@@ -159,6 +160,8 @@
     }
     .entry-row:hover { background: #f8f9fa; }
     .entry-row.is-selected { box-shadow: 0 0 0 2px var(--accent); }
+    .entry-row.is-overlap { border-color: var(--warn); }
+    .entry-row__warn { flex: 0 0 auto; color: var(--warn); font-size: 14px; }
     .entry-row__date {
       flex: 0 0 84px;
       color: var(--muted);
@@ -373,6 +376,14 @@
     }
     .cal__block:hover { filter: brightness(0.97); }
     .cal__block.is-selected { box-shadow: 0 0 0 2px var(--accent); }
+    .cal__block.is-overlap { outline: 2px solid var(--warn); outline-offset: -2px; }
+    .cal__block-warn {
+      position: absolute;
+      top: 2px; right: 4px;
+      font-size: 12px;
+      line-height: 1;
+      z-index: 1;
+    }
     .cal__block-inner { padding: 2px 5px; }
     .cal__block-time {
       font-variant-numeric: tabular-nums;
@@ -418,6 +429,20 @@
     .cal__resize--bottom { bottom: 0; }
 
     .cal-hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
+
+    /* 時間が重複しているエントリーの警告 */
+    .overlap-warning {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0 0 12px;
+      padding: 8px 12px;
+      background: #fff4e6;
+      border: 1px solid #ffd8a8;
+      border-radius: var(--radius);
+      color: #d9480f;
+      font-size: 13px;
+    }
 
     /* ===== プロジェクト ===== */
     .project-add { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
@@ -573,6 +598,10 @@
           </div>
         </div>
 
+        <p v-if="overlapCount" class="overlap-warning">
+          ⚠ 時間が重複しているエントリーが {{ overlapCount }} 件あります。
+        </p>
+
         <!-- カレンダー表示 -->
         <div v-show="entryView === 'calendar'">
         <div class="cal-nav">
@@ -626,11 +655,12 @@
                     v-for="e in entriesByDay[di]"
                     :key="e.id"
                     class="cal__block"
-                    :class="{ 'is-selected': editingId === e.id || selectedId === e.id }"
+                    :class="{ 'is-selected': editingId === e.id || selectedId === e.id, 'is-overlap': isOverlapping(e) }"
                     :style="blockStyle(e)"
                     :title="entryTooltip(e)"
                     @mousedown.stop="onBlockDown($event, e, di)"
                   >
+                    <span v-if="isOverlapping(e)" class="cal__block-warn" title="時間が他のエントリーと重複しています">⚠</span>
                     <div class="cal__resize cal__resize--top" @mousedown.stop="onResizeDown($event, e, di, 'top')"></div>
                     <div class="cal__block-inner">
                       <div class="cal__block-time">{{ formatClock(e.start) }}–{{ formatClock(e.end) }}</div>
@@ -678,9 +708,10 @@
               v-for="e in listEntries"
               :key="e.id"
               class="entry-row"
-              :class="{ 'is-selected': editingId === e.id }"
+              :class="{ 'is-selected': editingId === e.id, 'is-overlap': isOverlapping(e) }"
               @click="openEditor(e.id, $event.clientX, $event.clientY)"
             >
+              <span v-if="isOverlapping(e)" class="entry-row__warn" title="時間が他のエントリーと重複しています">⚠</span>
               <span class="entry-row__date">{{ formatDate(e.start) }}</span>
               <span class="entry-row__time">{{ formatClock(e.start) }}–{{ formatClock(e.end) }}</span>
               <span class="entry-row__proj" :class="{ 'is-none': !projectOf(e) }">
@@ -1153,6 +1184,26 @@
           }
           return total;
         },
+        // 時間帯が他のエントリーと重なっているエントリーの id 集合。
+        // 開始時刻でソートしてスイープし、ペアの重複を検出する。
+        overlappingIds() {
+          const items = this.entries
+            .filter((e) => e.start && e.end)
+            .map((e) => ({ id: e.id, s: new Date(e.start).getTime(), e: new Date(e.end).getTime() }))
+            .sort((a, b) => a.s - b.s);
+          const ids = new Set();
+          for (let i = 0; i < items.length; i++) {
+            for (let j = i + 1; j < items.length; j++) {
+              if (items[j].s >= items[i].e) break; // 以降は開始が遅く重ならない
+              ids.add(items[i].id);
+              ids.add(items[j].id);
+            }
+          }
+          return ids;
+        },
+        overlapCount() {
+          return this.overlappingIds.size;
+        },
         // 説明欄の補完候補: 過去約1か月のエントリから一致する説明(＋プロジェクト)を抽出
         descSuggestions() {
           const q = this.editForm.description.trim().toLowerCase();
@@ -1615,6 +1666,10 @@
         durationOf(e) {
           return Math.max(0, new Date(e.end).getTime() - new Date(e.start).getTime());
         },
+        // このエントリーが他のエントリーと時間帯で重複しているか
+        isOverlapping(e) {
+          return this.overlappingIds.has(e.id);
+        },
         rangeBounds(range) {
           const now = new Date();
           const y = now.getFullYear();
@@ -1682,7 +1737,8 @@
         entryTooltip(e) {
           const time = `${this.formatClock(e.start)}–${this.formatClock(e.end)} (${this.formatHours(this.durationOf(e))})`;
           const tags = e.tags && e.tags.length ? `タグ: ${e.tags.join(", ")}` : "";
-          return [time, this.projectLabel(e), e.description || "(無題)", tags]
+          const warn = this.isOverlapping(e) ? "⚠ 他のエントリーと時間が重複しています" : "";
+          return [time, this.projectLabel(e), e.description || "(無題)", tags, warn]
             .filter(Boolean)
             .join("\n");
         },
