@@ -894,7 +894,34 @@
         </select>
       </label>
       <label class="field">タグ (カンマ区切り)
-        <input type="text" v-model="editForm.tagsText" placeholder="例: 開発, 会議" @keydown.enter.prevent="saveEdit" />
+        <div class="field-suggest">
+          <input
+            type="text"
+            ref="tagInput"
+            v-model="editForm.tagsText"
+            placeholder="例: 開発, 会議"
+            autocomplete="off"
+            @focus="tagFocus = true"
+            @input="tagFocus = true; tagActiveIndex = -1"
+            @blur="tagFocus = false"
+            @keydown.down.prevent="tagMove(1)"
+            @keydown.up.prevent="tagMove(-1)"
+            @keydown.enter="tagEnter($event)"
+            @keydown.esc="tagEsc($event)"
+          />
+          <ul v-if="tagFocus && tagSuggestions.length" class="suggest">
+            <li
+              v-for="(t, i) in tagSuggestions"
+              :key="t"
+              class="suggest__item"
+              :class="{ 'is-active': i === tagActiveIndex }"
+              @mouseenter="tagActiveIndex = i"
+              @mousedown.stop.prevent="applyTagSuggestion(t)"
+            >
+              <span class="suggest__main"><span class="cal__tag">{{ t }}</span></span>
+            </li>
+          </ul>
+        </div>
       </label>
       <div class="field-row">
         <label class="field">開始
@@ -1104,6 +1131,8 @@
           editForm: { description: "", projectId: null, tagsText: "", startTime: "", endTime: "" },
           descFocus: false, // 説明欄の補完候補を表示中か
           descActiveIndex: -1, // 補完候補のキーボード選択位置(-1=未選択)
+          tagFocus: false, // タグ欄の補完候補を表示中か
+          tagActiveIndex: -1, // タグ補完候補のキーボード選択位置(-1=未選択)
           editorPos: { x: 0, y: 0 }, // ポップオーバーの表示位置
           entryView: "calendar", // エントリーの表示: calendar | list
           listRange: "week", // リスト表示の集計期間
@@ -1230,6 +1259,39 @@
               color: p ? p.color : null,
               tags: Array.isArray(e.tags) ? e.tags : [],
             });
+            if (out.length >= 8) break;
+          }
+          return out;
+        },
+        // タグ欄の補完候補: 過去約1か月のエントリのタグから、入力中のトークンに一致するものを抽出
+        tagSuggestions() {
+          const text = this.editForm.tagsText;
+          const sep = text.lastIndexOf(",");
+          // 入力中のトークン = 最後のカンマより後の部分
+          const token = text.slice(sep + 1).trim().toLowerCase();
+          // 既に入力済みのタグ(重複候補を除外)
+          const chosen = new Set(
+            this.parseTags(text.slice(0, sep + 1)).map((t) => t.toLowerCase())
+          );
+          const cutoff = Date.now() - 31 * 24 * 3600 * 1000;
+          const recent = [...this.entries]
+            .filter((e) => new Date(e.start).getTime() >= cutoff && e.id !== this.editingId)
+            .sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime());
+          const seen = new Set();
+          const out = [];
+          for (const e of recent) {
+            if (!Array.isArray(e.tags)) continue;
+            for (const tag of e.tags) {
+              const t = (tag || "").trim();
+              if (!t) continue;
+              const tl = t.toLowerCase();
+              if (seen.has(tl) || chosen.has(tl)) continue;
+              // トークン入力時は前方/部分一致するもののみ(完全一致は除外)
+              if (token && (tl === token || !tl.includes(token))) continue;
+              seen.add(tl);
+              out.push(t);
+              if (out.length >= 8) break;
+            }
             if (out.length >= 8) break;
           }
           return out;
@@ -1529,6 +1591,8 @@
           if (typeof x === "number" && typeof y === "number") this.editorPos = { x, y };
           this.descFocus = false;
           this.descActiveIndex = -1;
+          this.tagFocus = false;
+          this.tagActiveIndex = -1;
           this.editingId = id;
           this.draftId = isDraft ? id : null;
           this.editForm = {
@@ -1774,6 +1838,43 @@
             this.descFocus = false;
             this.descActiveIndex = -1;
             event.stopPropagation(); // 全体のEscクローズより先に候補だけ閉じる
+          }
+        },
+        // タグ補完候補を選択(入力中のトークンを置き換え、続けて入力できるよう末尾にカンマを付ける)
+        applyTagSuggestion(t) {
+          const text = this.editForm.tagsText;
+          const chosen = this.parseTags(text.slice(0, text.lastIndexOf(",") + 1));
+          chosen.push(t);
+          this.editForm.tagsText = chosen.join(", ") + ", ";
+          this.tagActiveIndex = -1;
+          this.$nextTick(() => {
+            const el = this.$refs.tagInput;
+            if (el) el.focus(); // 続けてタグを入力できるようフォーカスを戻す
+          });
+        },
+        tagMove(delta) {
+          const n = this.tagSuggestions.length;
+          if (!n) return;
+          this.tagFocus = true;
+          const i = this.tagActiveIndex;
+          this.tagActiveIndex = i < 0 ? (delta > 0 ? 0 : n - 1) : (i + delta + n) % n;
+        },
+        tagEnter(event) {
+          event.preventDefault();
+          const t = this.tagSuggestions[this.tagActiveIndex];
+          if (this.tagFocus && t) {
+            // 候補をキーボード選択中なら、その候補を確定
+            this.applyTagSuggestion(t);
+          } else {
+            // 候補未選択なら保存
+            this.saveEdit();
+          }
+        },
+        tagEsc(event) {
+          if (this.tagFocus) {
+            this.tagFocus = false;
+            this.tagActiveIndex = -1;
+            event.stopPropagation();
           }
         },
         // リストから該当エントリのカレンダー(その週・時刻)へ移動して一時強調
