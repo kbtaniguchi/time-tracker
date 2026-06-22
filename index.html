@@ -458,7 +458,9 @@
       border-radius: var(--radius);
       margin-bottom: 8px;
     }
-    .project-item__name { flex: 1 1 auto; }
+    .project-item__name { flex: 1 1 auto; min-width: 0; }
+    .project-item--archived { opacity: 0.7; }
+    .project-item--archived .project-item__name { color: var(--muted); }
     .project-item__count { color: var(--muted); font-size: 13px; white-space: nowrap; }
 
     /* ===== レポート ===== */
@@ -791,13 +793,28 @@
         </div>
         <p v-if="projects.length === 0" class="empty">プロジェクトがありません。</p>
         <ul class="project-list">
-          <li v-for="p in projects" :key="p.id" class="project-item">
+          <li v-for="p in activeProjects" :key="p.id" class="project-item">
             <input type="color" v-model="p.color" />
             <input type="text" v-model="p.name" class="project-item__name" />
             <span class="project-item__count">{{ entryCountOf(p.id) }} 件</span>
+            <button class="icon-btn" title="アーカイブ" @click="archiveProject(p.id)">📦</button>
             <button class="icon-btn" title="削除" @click="removeProject(p.id)">🗑</button>
           </li>
         </ul>
+
+        <template v-if="archivedProjects.length">
+          <h3 class="data__subtitle">アーカイブ済み</h3>
+          <p class="data__hint">選択肢には表示されませんが、過去のエントリーとの紐付けとレポートは保持されます。</p>
+          <ul class="project-list">
+            <li v-for="p in archivedProjects" :key="p.id" class="project-item project-item--archived">
+              <span class="dot" :style="{ background: p.color }"></span>
+              <span class="project-item__name">{{ p.name }}</span>
+              <span class="project-item__count">{{ entryCountOf(p.id) }} 件</span>
+              <button class="icon-btn" title="アーカイブ解除" @click="unarchiveProject(p.id)">↩</button>
+              <button class="icon-btn" title="削除" @click="removeProject(p.id)">🗑</button>
+            </li>
+          </ul>
+        </template>
       </section>
 
       <!-- ===== データ管理 ===== -->
@@ -890,7 +907,7 @@
       <label class="field">プロジェクト
         <select v-model="editForm.projectId">
           <option :value="null">プロジェクトなし</option>
-          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+          <option v-for="p in selectableProjects" :key="p.id" :value="p.id">{{ p.name }}{{ p.archived ? "（アーカイブ済み）" : "" }}</option>
         </select>
       </label>
       <label class="field">タグ (カンマ区切り)
@@ -972,7 +989,12 @@
 
     // 保存データの正規化（壊れた/古い形式を整える）
     function normalizeData(d) {
-      if (!Array.isArray(d.projects)) d.projects = [];
+      d.projects = (Array.isArray(d.projects) ? d.projects : []).map((p) => ({
+        id: p.id || uuid(),
+        name: p.name || "",
+        color: p.color || "#adb5bd",
+        archived: !!p.archived,
+      }));
       d.entries = (Array.isArray(d.entries) ? d.entries : [])
         .filter((e) => e && e.start)
         .map((e) => ({
@@ -1174,6 +1196,25 @@
       computed: {
         bodyHeight() {
           return 24 * this.hourHeight;
+        },
+        // アーカイブされていないプロジェクト
+        activeProjects() {
+          return this.projects.filter((p) => !p.archived);
+        },
+        // アーカイブ済みプロジェクト
+        archivedProjects() {
+          return this.projects.filter((p) => p.archived);
+        },
+        // エントリ編集の選択肢: 通常はアクティブのみだが、
+        // 既にアーカイブ済みプロジェクトが選択されている場合はそれも含める
+        selectableProjects() {
+          const list = this.activeProjects.slice();
+          const sel = this.editForm.projectId;
+          if (sel && !list.some((p) => p.id === sel)) {
+            const p = this.projects.find((x) => x.id === sel);
+            if (p) list.push(p);
+          }
+          return list;
         },
         // 現在時刻ラインの縦位置(px)
         nowTop() {
@@ -1709,7 +1750,7 @@
         addProject() {
           const name = this.newProject.name.trim();
           if (!name) return;
-          this.projects.push({ id: uuid(), name, color: this.newProject.color });
+          this.projects.push({ id: uuid(), name, color: this.newProject.color, archived: false });
           this.newProject.name = "";
         },
         removeProject(id) {
@@ -1718,6 +1759,16 @@
             if (e.projectId === id) e.projectId = null;
           }
           if (this.lastProjectId === id) this.lastProjectId = null;
+        },
+        archiveProject(id) {
+          const p = this.projects.find((x) => x.id === id);
+          if (p) p.archived = true;
+          // アーカイブしたプロジェクトは新規作成の既定に使わない
+          if (this.lastProjectId === id) this.lastProjectId = null;
+        },
+        unarchiveProject(id) {
+          const p = this.projects.find((x) => x.id === id);
+          if (p) p.archived = false;
         },
         projectOf(e) {
           return this.projects.find((p) => p.id === e.projectId) || null;
@@ -2002,6 +2053,7 @@
                   id: uuid(),
                   name: trimmed,
                   color: PALETTE[(this.projects.length + newProjects.length) % PALETTE.length],
+                  archived: false,
                 };
                 newProjects.push(proj);
                 projByName.set(key, proj);
