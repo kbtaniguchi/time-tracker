@@ -465,6 +465,7 @@
 
     /* ===== レポート ===== */
     .report__controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+    .report__period { font-weight: 600; }
     .report__grandtotal { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
     .report__chart { display: flex; justify-content: center; margin: 4px 0 18px; }
     .report__pie { width: 168px; height: 168px; }
@@ -740,9 +741,7 @@
       <section class="report">
         <h2 class="section-title">レポート</h2>
         <div class="report__controls">
-          <select v-model="reportRange" class="report__range">
-            <option v-for="r in ranges" :key="r.key" :value="r.key">{{ r.label }}</option>
-          </select>
+          <span class="report__period" title="左の表示期間に連動します">{{ reportRangeLabel }}</span>
           <select v-model="reportGroupBy" class="report__range">
             <option v-for="g in groupModes" :key="g.key" :value="g.key">{{ g.label }}</option>
           </select>
@@ -1159,7 +1158,6 @@
           entryView: "calendar", // エントリーの表示: calendar | list
           listRange: "week", // リスト表示の集計期間
           listQuery: "", // リスト表示の絞り込み文字列
-          reportRange: "week",
           reportGroupBy: "project", // レポートの集計軸: project | tag
           menuOpen: false, // 管理ドロワー(プロジェクト/データ)の開閉
           fsSupported, // File System Access API 対応ブラウザか
@@ -1386,8 +1384,42 @@
           return { left: left + "px", top: top + "px" };
         },
         // --- レポート ---
+        // レポートの集計範囲は左側の表示に連動する:
+        // カレンダー表示なら表示中の週、リスト表示なら選択中の集計期間。
+        reportBounds() {
+          if (this.entryView === "calendar") {
+            const days = this.weekDays;
+            const s = days[0];
+            const e = days[6];
+            return {
+              start: new Date(s.getFullYear(), s.getMonth(), s.getDate()).getTime(),
+              end: new Date(e.getFullYear(), e.getMonth(), e.getDate() + 1).getTime(),
+            };
+          }
+          return this.rangeBounds(this.listRange);
+        },
+        // レポート見出しに表示する期間ラベル。
+        // カレンダーは週ラベル、リストは選択期間を具体的な年月日で表示する。
+        reportRangeLabel() {
+          if (this.entryView === "calendar") return this.weekLabel;
+          const { start, end } = this.reportBounds;
+          if (!isFinite(end)) return "全期間";
+          const a = new Date(start);
+          const b = new Date(end - 1); // end は排他的なので最終日に戻す
+          const fmt = (d) => `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+          if (a.getTime() === new Date(b.getFullYear(), b.getMonth(), b.getDate()).getTime()) {
+            return fmt(a); // 同一日(今日)
+          }
+          const right =
+            a.getFullYear() === b.getFullYear()
+              ? a.getMonth() === b.getMonth()
+                ? `${b.getDate()}日`
+                : `${b.getMonth() + 1}月${b.getDate()}日`
+              : fmt(b);
+          return `${fmt(a)} – ${right}`;
+        },
         reportEntries() {
-          const { start, end } = this.rangeBounds(this.reportRange);
+          const { start, end } = this.reportBounds;
           return this.entries.filter((e) => {
             const s = new Date(e.start).getTime();
             return s >= start && s < end;
