@@ -392,7 +392,8 @@
     }
     .cal__block-proj {
       font-size: 11px;
-      font-weight: 600;
+      font-weight: 400;
+      color: var(--muted);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -667,8 +668,8 @@
                     <div class="cal__resize cal__resize--top" @mousedown.stop="onResizeDown($event, e, di, 'top')"></div>
                     <div class="cal__block-inner">
                       <div class="cal__block-time">{{ formatClock(e.start) }}–{{ formatClock(e.end) }}</div>
-                      <div class="cal__block-proj" :class="{ 'is-none': !projectOf(e) }">{{ projectLabel(e) }}</div>
                       <div class="cal__block-desc">{{ e.description || '(無題)' }}</div>
+                      <div class="cal__block-proj" :class="{ 'is-none': !projectOf(e) }">{{ projectLabel(e) }}</div>
                       <div v-if="e.tags && e.tags.length" class="cal__block-tags">
                         <span v-for="t in e.tags" :key="t" class="cal__tag">{{ t }}</span>
                       </div>
