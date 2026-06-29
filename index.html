@@ -1650,6 +1650,11 @@
         setEntryTime(entry, dateObj, startMin, endMin) {
           entry.start = this.atMinutes(dateObj, startMin);
           entry.end = this.atMinutes(dateObj, endMin);
+          // 編集ポップオーバーを開いているエントリなら入力欄にも反映する
+          if (this.editingId === entry.id) {
+            this.editForm.startTime = this.formatClock(entry.start);
+            this.editForm.endTime = this.formatClock(entry.end);
+          }
         },
         atMinutes(dateObj, min) {
           const dt = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), 0, 0, 0, 0);
