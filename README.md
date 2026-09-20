@@ -7,7 +7,7 @@ Toggl Track 風の個人用タイムトラッカー。バックエンド不要�
 `index.html` をブラウザで開くだけです。
 ビルドやサーバ起動は不要です。HTML・CSS・JS は 1 ファイルにまとめてあります。
 Vue 3 と VueUse のみ CDN から読み込むため、初回だけインターネット接続が必要です（以降はブラウザキャッシュで動きます）。
-[github page](https://kbtaniguchi.github.io/time-tracker/)にもdeployしているので、気にならなければそちらを使ってもよいです。 
+[github pages](https://kbtaniguchi.github.io/time-tracker/)にもdeployしているので、気にならなければそちらを使ってもよいです。 
 
 ## 画面構成
 
