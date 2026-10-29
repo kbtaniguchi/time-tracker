@@ -58,9 +58,11 @@ Vue 3 と VueUse のみ CDN から読み込むため、初回だけインター�
 ```sh
 export TIME_TRACKER_FILE=/path/to/time-tracker.json   # または --file PATH
 
-tt ls                                   # 今日のエントリ（期間: today / yesterday / week / lastweek / month / lastmonth / year / all / YYYY-MM-DD）
-tt add "設計レビュー" 10:00-11:30 -p LTV -t review,mtg
-tt add "障害対応" 14:00-now             # 終了に now も可。-d YYYY-MM-DD で日付指定
+tt ls                                   # 今日のエントリと空き時間（期間: today / yesterday / week / lastweek / month / lastmonth / year / all / YYYY-MM-DD）
+tt ls LTV-1077                          # 語で絞り込んで合計を見る（期間を省略すると全期間。tt ls month LTV-1077 も可）
+tt add                                  # 過去のエントリを fzf で選び、直前のエントリの終了〜今を記録
+tt add 30m                              # 同じく fzf で選び、直前のエントリの終了から 30 分
+tt add "設計レビュー" 10:00-11:30 -p LTV -t review,mtg   # 説明を直接書くと、そのまま登録
 tt edit 3f2a -s 13:00-14:00 -m "説明を変更"   # ID は ls の先頭 8 文字の前方一致
 tt edit 3f2a -p ""                      # プロジェクトを外す
 tt rm 3f2a
@@ -69,6 +71,9 @@ tt view                                 # 今週をカレンダー表示（today
 tt projects / tt project add 名前 / tt tags
 ```
 
+- `add` の説明を省略すると、過去のエントリを fzf で選んで説明・プロジェクト・タグを引き継ぎます。一致が無いまま Enter すると、入力した文字がそのまま説明になります。`-p` / `-t` は引き継いだ値より優先します。
+- `add` の時間は 3 通りです。省略すると直前のエントリの終了〜今（15 分単位に丸める）、`30m` / `1h30m` は直前のエントリの終了からその長さ、`HH:MM-HH:MM` はその時間帯です。その日の最初のエントリは `HH:MM-HH:MM` で指定します。
+- `ls` の語は、説明・プロジェクト名・タグに対する部分一致（大文字小文字は区別しない。複数書くと AND）です。
 - プロジェクトは名前で指定します（大文字小文字は区別しません）。存在しない名前はエラーになるので `tt project add` で先に作ります。
 - 書き込みは一時ファイル経由で置き換えるため、途中で中断してもファイルは壊れません。
 - ブラウザ側は、タブに戻ったときにファイルが外部で更新されていれば自動で読み込みます。ブラウザでの編集を保存する時点でファイルが外部で更新されていた場合は、上書きするか読み込むかを確認します。

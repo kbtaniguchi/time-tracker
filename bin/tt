@@ -155,6 +155,17 @@ end
     end
 
     def hours(seconds) = format("%.2f h", seconds / 3600.0)
+
+    # "30m" / "1h" / "1h30m" を秒にする。所要時間の形でなければ nil
+    def parse_duration(str)
+      m = /\A(?:(\d+)h)?(?:(\d+)m)?\z/.match(str)
+      return nil unless m && (m[1] || m[2])
+
+      (m[1].to_i * 3600) + (m[2].to_i * 60)
+    end
+
+    # 15 分単位の最も近い時刻に丸める
+    def round15(time) = Time.at((time.to_i / 900.0).round * 900)
   end
 
   # 期間内のエントリを「日ごとの列 × 時刻の行」のカレンダーとして描く（index.html の週ビュー相当）
@@ -310,8 +321,8 @@ def duration(e) = Time.parse(e["end"]) - Time.parse(e["start"])
       データファイルは --file か環境変数 TIME_TRACKER_FILE で指定する。
 
       コマンド:
-        ls [期間]                         エントリ一覧（既定: today）
-        add 説明 HH:MM-HH:MM [オプション]  エントリ追加。終了に now も可
+        ls [期間] [語...]                 エントリ一覧（既定: today）。語で絞り込むと既定は全期間
+        add [説明] [時間] [オプション]     エントリ追加（下の「add」を参照）
         edit ID [オプション]               エントリ編集（ID は先頭数文字で可）
         rm ID                             エントリ削除
         report [期間] [--by project|tag]  集計（既定: week / project）
@@ -321,6 +332,12 @@ def duration(e) = Time.parse(e["end"]) - Time.parse(e["start"])
         tags                              使用中のタグ一覧
 
       期間: #{PERIODS.join(' / ')} / YYYY-MM-DD
+
+      add:
+        説明を省略すると過去のエントリを fzf で選び、説明・プロジェクト・タグを引き継ぐ
+        （一致が無いまま Enter すると入力した文字が説明になる）。-p / -t は引き継いだ値より優先する
+        時間: 省略 = 直前のエントリの終了〜今（15 分単位）/ 30m・1h30m = 直前のエントリの終了からその長さ
+              / HH:MM-HH:MM = その時間帯。「直前のエントリ」は --date の日（既定: 今日）で最後に終わるもの
 
       add / edit のオプション:
         -d, --date YYYY-MM-DD   日付（既定: today）
@@ -407,34 +424,140 @@ def duration(e) = Time.parse(e["end"]) - Time.parse(e["start"])
              duration(e) / 3600.0, desc, project_name(e), tags)
     end
 
+    # 同じ日のエントリ間の空きと、今日の最後のエントリから今までの未記録を挟んで表示する（記録漏れを見つけるため）
+    # 引数のうち期間として読めるものを期間、残りを絞り込みの語にする。語だけなら全期間から探す
     def cmd_ls
-      period = @argv.shift || "today"
-      list = entries_in(period)
+      period = nil
+      words = []
+      @argv.each { |a| period.nil? && period?(a) ? period = a : words << a.downcase }
+      period ||= words.empty? ? "today" : "all"
+      list = entries_in(period).select do |e|
+        hay = [e["description"], project_name(e), *e["tags"]].join(" ").downcase
+        words.all? { |w| hay.include?(w) }
+      end
       return puts(JSON.pretty_generate(list)) if @opts[:json]
 
       puts "(エントリなし)" if list.empty?
-      list.each { |e| puts format_entry(e) }
+      list.each_with_index do |e, i|
+        puts format_entry(e)
+        print_gaps(e, list[i + 1]) if words.empty?
+      end
       puts "合計 #{TimeUtil.hours(list.sum { |e| duration(e) })}" unless list.empty?
     end
 
+    def period?(str) = PERIODS.include?(str) || str.match?(/\A\d{4}-\d{2}-\d{2}\z/)
+
+    # 同じ日のエントリ間の空きと、今日の最後のエントリから今までの未記録を表示する（記録漏れを見つけるため）
+    def print_gaps(entry, nxt)
+      from = Time.parse(entry["end"])
+      to, label =
+        if nxt && Time.parse(nxt["start"]).localtime.to_date == from.localtime.to_date
+          [Time.parse(nxt["start"]), "空き"]
+        elsif nxt.nil? && from.localtime.to_date == Date.today
+          [TimeUtil.round15(Time.now), "未記録"]
+        end
+      return if to.nil? || to - from < 15 * 60
+
+      puts format("          ── %s %s-%s  %5.2fh", label, from.localtime.strftime("%H:%M"),
+                  to.localtime.strftime("%H:%M"), (to - from) / 3600.0)
+    end
+
+    # 説明を書けばそのまま登録し、省略すれば過去のエントリを fzf で選んで説明・プロジェクト・タグを引き継ぐ
     def cmd_add
-      desc = @argv.shift or raise Error, "説明を指定してください: tt add 説明 HH:MM-HH:MM"
-      span = @argv.shift || @opts[:span] or raise Error, "時間帯を指定してください: tt add 説明 HH:MM-HH:MM"
+      desc = @argv.first && !time_arg?(@argv.first) ? @argv.shift : nil
       date = TimeUtil.parse_date(@opts[:date])
-      s, e = TimeUtil.parse_span(date, span)
-      project = @opts[:project] && !@opts[:project].empty? ? @store.find_project!(@opts[:project]) : nil
+      s, e = add_span(date, @argv.shift || @opts[:span])
+      tmpl = nil
+      desc, tmpl = pick_with_fzf if desc.nil?
+      project_id =
+        if @opts.key?(:project)
+          @opts[:project].empty? ? nil : @store.find_project!(@opts[:project])["id"]
+        else
+          tmpl&.fetch("projectId")
+        end
       entry = {
         "id" => SecureRandom.uuid,
         "description" => desc,
-        "projectId" => project && project["id"],
-        "tags" => @opts[:tags] || [],
+        "projectId" => project_id,
+        "tags" => @opts[:tags] || tmpl&.fetch("tags")&.dup || [],
         "start" => TimeUtil.iso(s),
         "end" => TimeUtil.iso(e),
       }
+      overlaps = @store.entries.select { |o| Time.parse(o["start"]) < e && Time.parse(o["end"]) > s }
       @store.entries << entry
       @store.save
       puts "追加: #{format_entry(entry)}"
+      overlaps.each { |o| warn "注意: 時間が重なっています → #{format_entry(o)}" }
     end
+
+    # 説明に「LTV-1077」のようなハイフンが入ることがあるので、時間の形に完全一致するものだけを時間とみなす
+    def time_arg?(str) = str.match?(/\A\d{1,2}:?\d{2}-(\d{1,2}:?\d{2}|now)\z/) || !TimeUtil.parse_duration(str).nil?
+
+    # 時間は 省略（直前のエントリの終了〜今）/ 30m（直前のエントリの終了からその長さ）/ HH:MM-HH:MM の 3 通り
+    def add_span(date, arg)
+      return TimeUtil.parse_span(date, arg) if arg&.include?("-")
+
+      s = last_end(date)
+      e =
+        if arg.nil?
+          raise Error, "今日以外の日付では時間を指定してください（30m / HH:MM-HH:MM）" unless date == Date.today
+
+          TimeUtil.round15(Time.now)
+        else
+          sec = TimeUtil.parse_duration(arg) or raise Error, "時間は 30m / 1h30m / HH:MM-HH:MM で指定してください: #{arg}"
+          s + sec
+        end
+      raise Error, "直前のエントリが #{s.strftime('%H:%M')} に終わってから 15 分経っていません" if e <= s
+
+      [s, e]
+    end
+
+    def last_end(date)
+      ends = @store.entries
+                   .select { |en| Time.parse(en["start"]).localtime.to_date == date }
+                   .map { |en| Time.parse(en["end"]).localtime }
+      ends.max or raise Error, "#{date} にはまだエントリがありません。最初のエントリは HH:MM-HH:MM で時間帯を指定してください"
+    end
+
+    # 過去のエントリを (説明, プロジェクト, タグ) の組ごとに新しい順で出す。
+    # 一致する候補が無いまま Enter すると、入力した文字をそのまま説明にする
+    def pick_with_fzf
+      unless $stdin.tty? && $stderr.tty? && fzf?
+        raise Error, "説明を指定してください: tt add 説明 [時間]（説明の省略は fzf のある端末でだけ使えます）"
+      end
+
+      seen = {}
+      cands = []
+      @store.entries.sort_by { |e| e["start"] }.reverse_each do |e|
+        key = [e["description"], e["projectId"], e["tags"]]
+        next if seen[key] || e["description"].empty? || @store.project_by_id(e["projectId"])&.fetch("archived")
+
+        seen[key] = true
+        cands << e
+      end
+      lines = cands.each_with_index.map do |e, i|
+        tags = e["tags"].empty? ? "" : " [#{e['tags'].join(', ')}]"
+        "#{i}\t#{e['description']} / #{project_name(e)}#{tags}"
+      end
+      out = IO.popen(["fzf", "--print-query", "--delimiter=\t", "--with-nth=2", "--no-sort",
+                      "--height=40%", "--reverse", "--prompt=説明 > "], "r+") do |io|
+        io.puts(lines)
+        io.close_write
+        io.read
+      end
+      raise Error, "キャンセルしました" if $?.exitstatus == 130
+
+      query, picked = out.to_s.split("\n", 2).map(&:strip)
+      if picked && !picked.empty?
+        tmpl = cands[picked.split("\t").first.to_i]
+        return [tmpl["description"], tmpl]
+      end
+      raise Error, "キャンセルしました" if query.to_s.empty?
+
+      [query, nil]
+    end
+
+    def fzf? = ENV["PATH"].split(File::PATH_SEPARATOR).any? { |d| File.executable?(File.join(d, "fzf")) }
 
     def cmd_edit
       entry = @store.find_entry!(@argv.shift || raise(Error, "ID を指定してください"))
