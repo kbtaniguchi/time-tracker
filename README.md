@@ -50,3 +50,26 @@ Vue 3 と VueUse のみ CDN から読み込むため、初回だけインター�
 - ブラウザの `localStorage`（キー: `time-tracker-data`）に自動保存されます。
 - 同じブラウザ・同じオリジンでのみ参照できます。別端末へ移すときは JSON エクスポート/インポートを使ってください。
 - ブラウザのデータを消すと記録も消えるため、定期的なエクスポートを推奨します。
+
+## CLI（`bin/tt`）
+
+⚙ ドロワーの「ファイル同期」で接続した JSON ファイルを、ターミナルから閲覧・編集できます。Ruby 3.x の標準ライブラリだけで動きます。
+
+```sh
+export TIME_TRACKER_FILE=/path/to/time-tracker.json   # または --file PATH
+
+tt ls                                   # 今日のエントリ（期間: today / yesterday / week / lastweek / month / lastmonth / year / all / YYYY-MM-DD）
+tt add "設計レビュー" 10:00-11:30 -p LTV -t review,mtg
+tt add "障害対応" 14:00-now             # 終了に now も可。-d YYYY-MM-DD で日付指定
+tt edit 3f2a -s 13:00-14:00 -m "説明を変更"   # ID は ls の先頭 8 文字の前方一致
+tt edit 3f2a -p ""                      # プロジェクトを外す
+tt rm 3f2a
+tt report week --by tag                 # 集計（--json で機械可読）
+tt view                                 # 今週をカレンダー表示（today / lastweek / YYYY-MM-DD も可。--slot 15 で細かく）
+tt projects / tt project add 名前 / tt tags
+```
+
+- プロジェクトは名前で指定します（大文字小文字は区別しません）。存在しない名前はエラーになるので `tt project add` で先に作ります。
+- 書き込みは一時ファイル経由で置き換えるため、途中で中断してもファイルは壊れません。
+- ブラウザ側は、タブに戻ったときにファイルが外部で更新されていれば自動で読み込みます。ブラウザでの編集を保存する時点でファイルが外部で更新されていた場合は、上書きするか読み込むかを確認します。
+- WSL から Windows の Google ドライブ（例: `G:`）上のファイルを扱うときは、先にマウントします: `sudo mkdir -p /mnt/g && sudo mount -t drvfs G: /mnt/g`
