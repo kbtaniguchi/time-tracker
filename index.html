@@ -1057,12 +1057,36 @@
     const fsSupported = typeof window !== "undefined" && "showSaveFilePicker" in window;
     let fileHandle = null; // 接続中のファイルハンドル
     let fileWritable = false; // 書き込み権限が許可されているか
+    // このタブが最後に読み書きした時点のファイル更新時刻と内容。
+    // CLI など外部からの書き換えを検知し、古い画面の内容で上書きしないために使う
+    let fileSyncedAt = 0;
+    let fileSyncedText = null;
+
+    function markSynced(file, text) {
+      fileSyncedAt = file.lastModified;
+      fileSyncedText = text;
+    }
 
     // ハンドルへ JSON を書き込む
     async function fsWrite(handle, dataObj) {
+      const text = JSON.stringify(dataObj, null, 2);
       const w = await handle.createWritable();
-      await w.write(JSON.stringify(dataObj, null, 2));
+      await w.write(text);
       await w.close();
+      markSynced(await handle.getFile(), text);
+    }
+
+    // 前回の読み書き以降にファイルが外部で変更されていれば、その内容(パース済み)を返す
+    async function fsReadIfChanged(handle) {
+      const file = await handle.getFile();
+      if (file.lastModified <= fileSyncedAt) return null;
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!Array.isArray(data.entries) || !Array.isArray(data.projects)) {
+        throw new Error("形式が正しくありません");
+      }
+      markSynced(file, text);
+      return data;
     }
 
     // ハンドルを再読込できるよう IndexedDB に保存する(ハンドルは構造化複製可能)
@@ -1134,16 +1158,43 @@
           set: (v) => { store.value.projects = v; },
         });
 
-        // ファイル接続中は、変更を1秒デバウンスで接続ファイルへ自動保存
+        // ファイル接続中は、変更を1秒デバウンスで接続ファイルへ自動保存。
+        // ファイルが外部で変更されていたら、上書きするかファイル側を採るかを確認する
         watchDebounced(
           store,
-          () => {
-            if (fileHandle && fileWritable) {
-              fsWrite(fileHandle, store.value).catch((e) => console.error("ファイル自動保存に失敗", e));
+          async () => {
+            if (!(fileHandle && fileWritable)) return;
+            try {
+              if (JSON.stringify(store.value, null, 2) === fileSyncedText) return;
+              const external = await fsReadIfChanged(fileHandle);
+              if (
+                external &&
+                !confirm(
+                  "接続中のファイルが外部（CLI など）で更新されています。\n" +
+                    "OK: 画面の内容でファイルを上書き / キャンセル: ファイルの内容を読み込む"
+                )
+              ) {
+                normalizeData(external);
+                store.value = external;
+                return;
+              }
+              await fsWrite(fileHandle, store.value);
+            } catch (e) {
+              console.error("ファイル自動保存に失敗", e);
             }
           },
           { deep: true, debounce: 1000 }
         );
+
+        // 外部で変更されたファイルの内容を画面へ取り込む(変更が無ければ何もしない)
+        const syncFromFile = async () => {
+          if (!(fileHandle && fileWritable)) return false;
+          const external = await fsReadIfChanged(fileHandle);
+          if (!external) return false;
+          normalizeData(external);
+          store.value = external;
+          return true;
+        };
 
         return {
           entries,
@@ -1154,6 +1205,7 @@
           _histRedo: histRedo,
           _histPause: histPause,
           _histResume: histResume,
+          _syncFromFile: syncFromFile,
         };
       },
 
@@ -2174,7 +2226,7 @@
             if (perm === "granted") {
               fileWritable = true;
               this.fsNeedsReconnect = false;
-              await fsWrite(fileHandle, { entries: this.entries, projects: this.projects });
+              await this.reconcileWithFile();
             } else {
               alert("ファイルへの書き込み権限が許可されませんでした。");
             }
@@ -2193,16 +2245,57 @@
               this.fsNeedsReconnect = false;
             }
             const file = await fileHandle.getFile();
-            const data = JSON.parse(await file.text());
+            const text = await file.text();
+            const data = JSON.parse(text);
             if (!Array.isArray(data.entries) || !Array.isArray(data.projects)) {
               throw new Error("形式が正しくありません");
             }
             if (!confirm("接続中のファイルの内容で現在のデータを置き換えます。よろしいですか？")) return;
+            markSynced(file, text);
             this.closeEditor();
+            normalizeData(data);
             this.projects = data.projects;
             this.entries = data.entries;
           } catch (err) {
             alert("ファイルからの読み込みに失敗しました: " + err.message);
+          }
+        },
+        // 権限を得た直後に、画面とファイルの内容が違えばどちらを採るか確認する。
+        // ページを閉じている間に CLI などでファイルが更新されていることがあるため
+        async reconcileWithFile() {
+          const file = await fileHandle.getFile();
+          const text = await file.text();
+          const local = JSON.stringify({ entries: this.entries, projects: this.projects }, null, 2);
+          if (text === local) {
+            markSynced(file, text);
+            return;
+          }
+          if (
+            confirm(
+              "接続中のファイルの内容が画面と異なります（CLI などで更新された可能性があります）。\n" +
+                "OK: ファイルの内容を読み込む / キャンセル: 画面の内容でファイルを上書き"
+            )
+          ) {
+            const data = JSON.parse(text);
+            if (!Array.isArray(data.entries) || !Array.isArray(data.projects)) {
+              throw new Error("形式が正しくありません");
+            }
+            markSynced(file, text);
+            this.closeEditor();
+            normalizeData(data);
+            this.projects = data.projects;
+            this.entries = data.entries;
+            return;
+          }
+          await fsWrite(fileHandle, { entries: this.entries, projects: this.projects });
+        },
+        // タブに戻ったとき、外部で更新されたファイルの内容を取り込む
+        async onWindowFocus() {
+          if (document.visibilityState !== "visible") return;
+          try {
+            if (await this._syncFromFile()) this.closeEditor();
+          } catch (err) {
+            console.error("ファイルの再読込に失敗", err);
           }
         },
         // 接続を解除する(ファイル自体は残る)
@@ -2224,6 +2317,9 @@
         window.addEventListener("mouseup", this._onUp);
         window.addEventListener("mousedown", this._onOutside);
         window.addEventListener("keydown", this._onKey);
+        this._onFocus = this.onWindowFocus.bind(this);
+        window.addEventListener("focus", this._onFocus);
+        document.addEventListener("visibilitychange", this._onFocus);
         // 現在時刻ラインを1分ごとに更新
         this._nowTimer = setInterval(() => {
           this.now = new Date();
@@ -2239,6 +2335,7 @@
                 const perm = await h.queryPermission({ mode: "readwrite" });
                 fileWritable = perm === "granted";
                 this.fsNeedsReconnect = !fileWritable;
+                if (fileWritable) await this.reconcileWithFile();
               } catch (e) {
                 this.fsNeedsReconnect = true;
               }
@@ -2257,6 +2354,8 @@
         window.removeEventListener("mouseup", this._onUp);
         window.removeEventListener("mousedown", this._onOutside);
         window.removeEventListener("keydown", this._onKey);
+        window.removeEventListener("focus", this._onFocus);
+        document.removeEventListener("visibilitychange", this._onFocus);
       },
     }).mount("#app");
   </script>

@@ -1,0 +1,542 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Time Tracker の JSON ファイル（index.html の「ファイル同期」で接続したもの）を
+# ターミナルから閲覧・編集する CLI。Ruby 標準ライブラリのみで動く。
+
+require "io/console"
+require "json"
+require "optparse"
+require "securerandom"
+require "time"
+
+module TimeTracker
+  class Error < StandardError; end
+
+  # index.html の PALETTE と同じ並び
+  PALETTE = %w[#4dabf7 #20c997 #fa5252 #fab005 #7950f2 #e64980 #15aabf #82c91e #fd7e14 #868e96].freeze
+  DEFAULT_COLOR = "#adb5bd"
+  PERIODS = %w[today yesterday week lastweek month lastmonth year all].freeze
+
+  class Store
+    attr_reader :path, :data
+
+    def initialize(path)
+      @path = path
+      raise Error, "データファイルが見つかりません: #{path}" unless File.exist?(path)
+
+      @data = JSON.parse(File.read(path, encoding: "UTF-8"))
+      unless @data["entries"].is_a?(Array) && @data["projects"].is_a?(Array)
+        raise Error, "形式が正しくありません（entries / projects が配列ではない）: #{path}"
+      end
+    end
+
+    def entries = data["entries"]
+    def projects = data["projects"]
+
+    # 書き込み途中で壊れないよう、同じディレクトリの一時ファイルに書いてから置き換える
+    def save
+      tmp = "#{path}.tmp-#{Process.pid}"
+      File.write(tmp, JSON.pretty_generate(data), encoding: "UTF-8")
+      File.rename(tmp, path)
+    ensure
+      File.delete(tmp) if tmp && File.exist?(tmp)
+    end
+
+    def project_by_id(id) = projects.find { |p| p["id"] == id }
+
+    # 名前で完全一致（大文字小文字は無視）。アーカイブ済みは一致しても選ばない
+    def find_project!(name)
+      hit = projects.find { |p| p["name"].casecmp?(name) && !p["archived"] }
+      return hit if hit
+
+      archived = projects.find { |p| p["name"].casecmp?(name) }
+      raise Error, "プロジェクト「#{name}」はアーカイブ済みです" if archived
+
+      names = projects.reject { |p| p["archived"] }.map { |p| p["name"] }
+      raise Error, "プロジェクト「#{name}」がありません。既存: #{names.join(', ')}\n" \
+                   "新しく作るなら: tt project add \"#{name}\""
+    end
+
+    # ID の先頭一致で 1 件に特定する
+    def find_entry!(prefix)
+      hits = entries.select { |e| e["id"].start_with?(prefix) }
+      raise Error, "ID が #{prefix} で始まるエントリがありません" if hits.empty?
+      raise Error, "ID が #{prefix} で始まるエントリが #{hits.size} 件あります。もっと長く指定してください" if hits.size > 1
+
+      hits.first
+    end
+  end
+
+# 端末での桁揃え用。全角文字を幅 2 として数える
+module Text
+  module_function
+
+  def width(str) = str.each_char.sum { |c| c.ascii_only? ? 1 : 2 }
+
+  # 表示幅 w に切り詰め、足りない分は空白で埋める
+  def fit(str, w)
+    out = +""
+    used = 0
+    str.each_char do |c|
+      cw = c.ascii_only? ? 1 : 2
+      break if used + cw > w
+
+      out << c
+      used += cw
+    end
+    out + (" " * (w - used))
+  end
+end
+
+  module TimeUtil
+    module_function
+
+    def parse_date(str)
+      case str
+      when nil, "today" then Date.today
+      when "yesterday" then Date.today - 1
+      else
+        Date.strptime(str, "%Y-%m-%d")
+      end
+    rescue Date::Error
+      raise Error, "日付は YYYY-MM-DD / today / yesterday で指定してください: #{str}"
+    end
+
+    # "HH:MM" または "now" を、その日のローカル時刻にする
+    def parse_clock(date, str)
+      return Time.now if str == "now"
+
+      m = /\A(\d{1,2}):?(\d{2})\z/.match(str) or raise Error, "時刻は HH:MM で指定してください: #{str}"
+      h = m[1].to_i
+      min = m[2].to_i
+      raise Error, "時刻が不正です: #{str}" if h > 24 || min > 59 || (h == 24 && min.positive?)
+
+      Time.local(date.year, date.month, date.day) + (h * 3600) + (min * 60)
+    end
+
+    # "10:00-11:30" を開始・終了の Time にする。終了が開始以前なら日跨ぎとみなす
+    def parse_span(date, str)
+      from, to = str.split("-", 2)
+      raise Error, "時間帯は HH:MM-HH:MM で指定してください: #{str}" unless from && to
+
+      s = parse_clock(date, from)
+      e = parse_clock(date, to)
+      e += 86_400 if e <= s && to != "now"
+      raise Error, "終了が開始より前です: #{str}" if e <= s
+
+      [s, e]
+    end
+
+    # index.html の toISOString() と同じ形式（UTC・ミリ秒付き）
+    def iso(time) = time.utc.iso8601(3)
+
+    def local_midnight(date) = Time.local(date.year, date.month, date.day)
+
+    # index.html の rangeBounds と同じ区切り（週は月曜始まり）。YYYY-MM-DD でその 1 日
+    def range(period)
+      today = Date.today
+      monday = today - ((today.wday + 6) % 7)
+      s, e =
+        case period
+        when "today" then [today, today + 1]
+        when "yesterday" then [today - 1, today]
+        when "week" then [monday, monday + 7]
+        when "lastweek" then [monday - 7, monday]
+        when "month" then [Date.new(today.year, today.month, 1), Date.new(today.year, today.month, 1) >> 1]
+        when "lastmonth" then [Date.new(today.year, today.month, 1) << 1, Date.new(today.year, today.month, 1)]
+        when "year" then [Date.new(today.year, 1, 1), Date.new(today.year + 1, 1, 1)]
+        when "all" then return [Time.at(0), Time.local(9999)]
+        else
+          d = parse_date(period)
+          [d, d + 1]
+        end
+      [local_midnight(s), local_midnight(e)]
+    end
+
+    def hours(seconds) = format("%.2f h", seconds / 3600.0)
+  end
+
+  # 期間内のエントリを「日ごとの列 × 時刻の行」のカレンダーとして描く（index.html の週ビュー相当）
+  class Timeline
+    NONE_COLOR = DEFAULT_COLOR
+    RESET = "\e[0m"
+    DIM = "\e[2m"
+    BOLD = "\e[1m"
+    RED = "\e[31m"
+    GUTTER = 6 # "HH:MM " の幅
+
+    def initialize(store:, days:, entries:, slot:, width:, color:)
+      @store = store
+      @days = days
+      @entries = entries
+      @slot = slot * 60
+      @color = color
+      @col = ((width - GUTTER) / days.size) - 1
+      @col = @col.clamp(8, days.size == 1 ? 80 : 40)
+      @from_h, @to_h = hour_range
+      @grid = days.map { |d| build_column(d) }
+    end
+
+    def render
+      lines = [header]
+      slots_per_day.times { |i| lines << row(i) }
+      lines << ""
+      lines.concat(legend)
+      lines.join("\n")
+    end
+
+    private
+
+    # 予定のある時間帯を含むよう広げる（最低でも 9〜18 時）
+    def hour_range
+      from = 9
+      to = 18
+      @entries.each do |e|
+        s = Time.parse(e["start"]).localtime
+        en = Time.parse(e["end"]).localtime
+        from = [from, s.hour].min
+        to = en.to_date > s.to_date ? 24 : [to, en.hour + (en.min.positive? ? 1 : 0)].max
+      end
+      [from, to.clamp(from + 1, 24)]
+    end
+
+    def slots_per_day = ((@to_h - @from_h) * 3600) / @slot
+
+    def slot_start(day, i) = Time.local(day.year, day.month, day.day, @from_h) + (i * @slot)
+
+    # 各スロットに、そのスロットと最も長く重なるエントリを割り当てる。日跨ぎは開始日の列に 24 時まで描く
+    def build_column(day)
+      todays = entries_on(day)
+      Array.new(slots_per_day) do |i|
+        t0 = slot_start(day, i)
+        t1 = t0 + @slot
+        best = todays.max_by { |e| overlap(e, t0, t1) }
+        best && overlap(best, t0, t1).positive? ? best : nil
+      end
+    end
+
+    def overlap(e, t0, t1)
+      s = Time.parse(e["start"])
+      en = Time.parse(e["end"])
+      [[en, t1].min - [s, t0].max, 0].max
+    end
+
+    def header
+      cells = @days.each_with_index.map do |d, di|
+        total = entries_on(d).sum { |e| duration(e) }
+        wd = %w[日 月 火 水 木 金 土][d.wday]
+        label = Text.fit("#{d.strftime('%m/%d')}(#{wd}) #{format('%.2fh', total / 3600.0)}", @col)
+        d == Date.today ? paint(label, BOLD) : label
+      end
+      (" " * GUTTER) + cells.join(sep)
+    end
+
+    def row(i)
+      t0 = slot_start(@days.first, i)
+      now = Time.now
+      now_here = @days.include?(now.to_date) &&
+                 (now - slot_start(now.to_date, i)).between?(0, @slot - 1)
+      label =
+        if now_here then paint(now.strftime("%H:%M"), RED) + " "
+        elsif t0.min.zero? then paint(t0.strftime("%H:%M"), DIM) + " "
+        else " " * GUTTER
+        end
+      label + @days.each_index.map { |di| cell(di, i) }.join(sep)
+    end
+
+    # ブロックの 1 行目に説明、2 行目にプロジェクト、3 行目にタグを書く
+    def cell(di, i)
+      e = @grid[di][i]
+      return " " * @col unless e
+
+      k = 0
+      k += 1 while i - k - 1 >= 0 && @grid[di][i - k - 1].equal?(e)
+      text =
+        case k
+        when 0 then e["description"].empty? ? "(無題)" : e["description"]
+        when 1 then project_name(e)
+        when 2 then e["tags"].join(", ")
+        else ""
+        end
+      return (k.zero? ? "┌" : "│") + Text.fit(text, @col - 1) unless @color
+
+      bg, fg = colors_for(e)
+      "\e[48;2;#{bg.join(';')}m\e[38;2;#{fg.join(';')}m#{k.zero? ? BOLD : ''} #{Text.fit(text, @col - 1)}#{RESET}"
+    end
+
+    def legend
+      sums = Hash.new(0)
+      @entries.each { |e| sums[project_of(e)] += duration(e) }
+      items = sums.sort_by { |_, v| -v }.map do |p, v|
+        name = p ? p["name"] : "プロジェクトなし"
+        swatch = @color ? "\e[38;2;#{hex_rgb(p ? p['color'] : NONE_COLOR).join(';')}m■#{RESET}" : "■"
+        "#{swatch} #{name} #{format('%.2fh', v / 3600.0)}"
+      end
+      total = sums.values.sum
+      [items.join("   "), "合計 #{TimeUtil.hours(total)}"]
+    end
+
+# 合計はグリッドでなくエントリから出す（スロットより短いエントリは描けないことがあるため）
+def entries_on(day) = @entries.select { |e| Time.parse(e["start"]).localtime.to_date == day }
+
+def duration(e) = Time.parse(e["end"]) - Time.parse(e["start"])
+
+    def sep = @color ? paint("│", DIM) : "│"
+
+    def paint(str, code) = @color ? "#{code}#{str}#{RESET}" : str
+
+    def project_of(e) = @store.project_by_id(e["projectId"])
+
+    def project_name(e) = project_of(e)&.fetch("name") || "プロジェクトなし"
+
+    # 背景はプロジェクト色、文字色は背景の明るさで白黒を選ぶ
+    def colors_for(e)
+      bg = hex_rgb(project_of(e)&.fetch("color") || NONE_COLOR)
+      lum = ((0.299 * bg[0]) + (0.587 * bg[1]) + (0.114 * bg[2])) / 255
+      [bg, lum > 0.6 ? [33, 37, 41] : [255, 255, 255]]
+    end
+
+    def hex_rgb(hex)
+      m = /\A#(\h\h)(\h\h)(\h\h)\z/.match(hex.to_s)
+      m ? m.captures.map { |h| h.to_i(16) } : hex_rgb(NONE_COLOR)
+    end
+  end
+
+  class CLI
+    USAGE = <<~TEXT
+      使い方: tt [--file PATH] <コマンド> [引数]
+
+      データファイルは --file か環境変数 TIME_TRACKER_FILE で指定する。
+
+      コマンド:
+        ls [期間]                         エントリ一覧（既定: today）
+        add 説明 HH:MM-HH:MM [オプション]  エントリ追加。終了に now も可
+        edit ID [オプション]               エントリ編集（ID は先頭数文字で可）
+        rm ID                             エントリ削除
+        report [期間] [--by project|tag]  集計（既定: week / project）
+        view [期間] [--slot 15|30|60]     カレンダー表示（既定: week。7 日以内の期間）
+        projects                          プロジェクト一覧
+        project add 名前 [--color #RRGGBB] プロジェクト追加
+        tags                              使用中のタグ一覧
+
+      期間: #{PERIODS.join(' / ')} / YYYY-MM-DD
+
+      add / edit のオプション:
+        -d, --date YYYY-MM-DD   日付（既定: today）
+        -p, --project 名前      プロジェクト（edit で "" を渡すと解除）
+        -t, --tags a,b          タグ（カンマ区切り。edit では置き換え）
+        -m, --desc 説明         説明（edit 用）
+        -s, --span HH:MM-HH:MM  時間帯（edit 用）
+        --json                  ls / report の結果を JSON で出す
+        --no-color              view を色なしで出す（パイプ先では自動で色なし）
+    TEXT
+
+    def initialize(argv)
+      @argv = argv.dup
+      @opts = {}
+    end
+
+    def run
+      parser.parse!(@argv)
+      cmd = @argv.shift
+      return puts(USAGE) if cmd.nil? || %w[help -h --help].include?(cmd)
+
+      @store = Store.new(data_path)
+      case cmd
+      when "ls", "list" then cmd_ls
+      when "add" then cmd_add
+      when "edit" then cmd_edit
+      when "rm", "delete" then cmd_rm
+      when "report" then cmd_report
+      when "view" then cmd_view
+      when "projects" then cmd_projects
+      when "project" then cmd_project
+      when "tags" then cmd_tags
+      else raise Error, "不明なコマンドです: #{cmd}\n\n#{USAGE}"
+      end
+    end
+
+    private
+
+    def parser
+      OptionParser.new do |o|
+        o.on("--file PATH") { |v| @opts[:file] = v }
+        o.on("-d", "--date DATE") { |v| @opts[:date] = v }
+        o.on("-p", "--project NAME") { |v| @opts[:project] = v }
+        o.on("-t", "--tags TAGS") { |v| @opts[:tags] = v.split(",").map(&:strip).reject(&:empty?) }
+        o.on("-m", "--desc TEXT") { |v| @opts[:desc] = v }
+        o.on("-s", "--span SPAN") { |v| @opts[:span] = v }
+        o.on("--by AXIS", %w[project tag]) { |v| @opts[:by] = v }
+        o.on("--color COLOR") { |v| @opts[:color] = v }
+        o.on("--json") { @opts[:json] = true }
+        o.on("--slot MIN", Integer) { |v| @opts[:slot] = v }
+        o.on("--no-color") { @opts[:no_color] = true }
+      end
+    end
+
+    def data_path
+      path = @opts[:file] || ENV.fetch("TIME_TRACKER_FILE", nil)
+      raise Error, "データファイルを --file か環境変数 TIME_TRACKER_FILE で指定してください" if path.nil? || path.empty?
+
+      File.expand_path(path)
+    end
+
+    def entries_in(period)
+      s, e = TimeUtil.range(period)
+      @store.entries
+            .select { |en| (t = Time.parse(en["start"])) >= s && t < e }
+            .sort_by { |en| en["start"] }
+    end
+
+    def duration(entry) = Time.parse(entry["end"]) - Time.parse(entry["start"])
+
+    def project_name(entry)
+      p = @store.project_by_id(entry["projectId"])
+      p ? p["name"] : "プロジェクトなし"
+    end
+
+    def format_entry(e)
+      s = Time.parse(e["start"]).localtime
+      en = Time.parse(e["end"]).localtime
+      wd = %w[日 月 火 水 木 金 土][s.wday]
+      tags = e["tags"].empty? ? "" : " [#{e['tags'].join(', ')}]"
+      desc = e["description"].empty? ? "(無題)" : e["description"]
+      format("%s  %s(%s) %s-%s  %5.2fh  %s / %s%s",
+             e["id"][0, 8], s.strftime("%m/%d"), wd, s.strftime("%H:%M"), en.strftime("%H:%M"),
+             duration(e) / 3600.0, desc, project_name(e), tags)
+    end
+
+    def cmd_ls
+      period = @argv.shift || "today"
+      list = entries_in(period)
+      return puts(JSON.pretty_generate(list)) if @opts[:json]
+
+      puts "(エントリなし)" if list.empty?
+      list.each { |e| puts format_entry(e) }
+      puts "合計 #{TimeUtil.hours(list.sum { |e| duration(e) })}" unless list.empty?
+    end
+
+    def cmd_add
+      desc = @argv.shift or raise Error, "説明を指定してください: tt add 説明 HH:MM-HH:MM"
+      span = @argv.shift || @opts[:span] or raise Error, "時間帯を指定してください: tt add 説明 HH:MM-HH:MM"
+      date = TimeUtil.parse_date(@opts[:date])
+      s, e = TimeUtil.parse_span(date, span)
+      project = @opts[:project] && !@opts[:project].empty? ? @store.find_project!(@opts[:project]) : nil
+      entry = {
+        "id" => SecureRandom.uuid,
+        "description" => desc,
+        "projectId" => project && project["id"],
+        "tags" => @opts[:tags] || [],
+        "start" => TimeUtil.iso(s),
+        "end" => TimeUtil.iso(e),
+      }
+      @store.entries << entry
+      @store.save
+      puts "追加: #{format_entry(entry)}"
+    end
+
+    def cmd_edit
+      entry = @store.find_entry!(@argv.shift || raise(Error, "ID を指定してください"))
+      entry["description"] = @opts[:desc] if @opts.key?(:desc)
+      entry["tags"] = @opts[:tags] if @opts.key?(:tags)
+      if @opts.key?(:project)
+        entry["projectId"] = @opts[:project].empty? ? nil : @store.find_project!(@opts[:project])["id"]
+      end
+      if @opts.key?(:span) || @opts.key?(:date)
+        date = @opts.key?(:date) ? TimeUtil.parse_date(@opts[:date]) : Time.parse(entry["start"]).localtime.to_date
+        span = @opts[:span] || [entry["start"], entry["end"]].map { |t| Time.parse(t).localtime.strftime("%H:%M") }.join("-")
+        s, e = TimeUtil.parse_span(date, span)
+        entry["start"] = TimeUtil.iso(s)
+        entry["end"] = TimeUtil.iso(e)
+      end
+      @store.save
+      puts "更新: #{format_entry(entry)}"
+    end
+
+    def cmd_rm
+      entry = @store.find_entry!(@argv.shift || raise(Error, "ID を指定してください"))
+      @store.entries.delete(entry)
+      @store.save
+      puts "削除: #{format_entry(entry)}"
+    end
+
+    # タグ別は 1 エントリを各タグへ加算するので、割合の合計が 100% を超えることがある（index.html と同じ）
+    def cmd_report
+      period = @argv.shift || "week"
+      by = @opts[:by] || "project"
+      list = entries_in(period)
+      total = list.sum { |e| duration(e) }
+      sums = Hash.new(0)
+      list.each do |e|
+        keys = by == "tag" ? (e["tags"].empty? ? ["タグなし"] : e["tags"]) : [project_name(e)]
+        keys.each { |k| sums[k] += duration(e) }
+      end
+      rows = sums.sort_by { |_, v| -v }
+      if @opts[:json]
+        return puts JSON.pretty_generate(
+          period: period, by: by, total_hours: (total / 3600.0).round(2),
+          rows: rows.map { |k, v| { name: k, hours: (v / 3600.0).round(2) } }
+        )
+      end
+
+      s, e = TimeUtil.range(period)
+      puts "#{period} (#{s.strftime('%Y-%m-%d')} 〜 #{(e - 1).strftime('%Y-%m-%d')}) / #{by == 'tag' ? 'タグ別' : 'プロジェクト別'}" unless period == "all"
+      width = rows.map { |k, _| Text.width(k) }.max.to_i
+      rows.each do |k, v|
+        pct = total.positive? ? (v * 100 / total).round : 0
+        puts format("  %s%s  %8s  %3d%%", k, " " * (width - Text.width(k)), TimeUtil.hours(v), pct)
+      end
+      puts "合計 #{TimeUtil.hours(total)}"
+    end
+
+def cmd_view
+  period = @argv.shift || "week"
+  raise Error, "--slot は 15 / 30 / 60 のいずれかです" unless [nil, 15, 30, 60].include?(@opts[:slot])
+
+  s, e = TimeUtil.range(period)
+  days = (s.to_date...e.to_date).to_a
+  raise Error, "view は 7 日以内の期間で使ってください（today / yesterday / week / lastweek / YYYY-MM-DD）" if days.size > 7
+
+  color = !@opts[:no_color] && $stdout.tty? && !ENV.key?("NO_COLOR")
+  width = IO.console&.winsize&.last || ENV.fetch("COLUMNS", 120).to_i
+  puts Timeline.new(store: @store, days: days, entries: entries_in(period),
+                    slot: @opts[:slot] || 30, width: width, color: color).render
+end
+
+    def cmd_projects
+      @store.projects.each do |p|
+        count = @store.entries.count { |e| e["projectId"] == p["id"] }
+        puts format("%s  %s  (%d 件)%s", p["color"], p["name"], count, p["archived"] ? "  [アーカイブ済み]" : "")
+      end
+    end
+
+    def cmd_project
+      sub = @argv.shift
+      raise Error, "使い方: tt project add 名前 [--color #RRGGBB]" unless sub == "add"
+
+      name = @argv.shift or raise Error, "プロジェクト名を指定してください"
+      raise Error, "プロジェクト「#{name}」は既にあります" if @store.projects.any? { |p| p["name"].casecmp?(name) }
+
+      color = @opts[:color] || PALETTE[@store.projects.size % PALETTE.size]
+      raise Error, "色は #RRGGBB で指定してください: #{color}" unless color.match?(/\A#\h{6}\z/)
+
+      @store.projects << { "id" => SecureRandom.uuid, "name" => name, "color" => color, "archived" => false }
+      @store.save
+      puts "追加: #{name} (#{color})"
+    end
+
+    def cmd_tags
+      counts = Hash.new(0)
+      @store.entries.each { |e| e["tags"].each { |t| counts[t] += 1 } }
+      counts.sort_by { |t, c| [-c, t] }.each { |t, c| puts "#{t}  (#{c} 件)" }
+    end
+  end
+end
+
+begin
+  TimeTracker::CLI.new(ARGV).run
+rescue TimeTracker::Error, OptionParser::ParseError => e
+  warn "エラー: #{e.message}"
+  exit 1
+end
